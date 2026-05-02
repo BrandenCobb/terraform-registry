@@ -62,10 +62,39 @@ jobs:
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
+        if: github.event_name == 'push'
         with:
           files: ./registry-server/coverage.out
           flags: unittests
           name: codecov-umbrella
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
+
+      - name: Upload Gosec results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gosec-results.sarif
+
+      - name: Run govulncheck
+        working-directory: registry-server
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
   build:
     name: Build
@@ -109,6 +138,28 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          load: true
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: terraform-registry:test
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy vulnerability scanner (table output)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: terraform-registry:test
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
 
   integration:
     name: Integration Tests
@@ -150,10 +201,14 @@ jobs:
           curl -f http://localhost:5000/.well-known/terraform.json
           curl -s http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1"'
 
+      - name: Check registry logs
+        if: always()
+        run: docker logs terraform-registry
+
       - name: Upload and test provider
         run: |
           # Create dummy provider binary and metadata
-          mkdir -p test-data/providers/test/example
+          mkdir -p test-data/providers/test/example/1.0.0
 
           # Create index.json
           cat > test-data/providers/test/example/index.json <<'EOF'
@@ -170,12 +225,13 @@ jobs:
           }
           EOF
 
-          # Create version directory and platform metadata
-          mkdir -p test-data/providers/test/example/1.0.0
+          # Create dummy provider binary
           echo "dummy provider binary" > test-data/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip
 
+          # Calculate checksum
           SHASUM=$(sha256sum test-data/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip | cut -d' ' -f1)
 
+          # Create platform metadata
           cat > test-data/providers/test/example/1.0.0/linux_amd64.json <<EOF
           {
             "protocols": ["5.0"],
@@ -190,9 +246,24 @@ jobs:
           }
           EOF
 
+          # Verify files were created
+          ls -laR test-data/
+
+          # Wait a moment for filesystem sync
+          sleep 2
+
+          # Check logs before test
+          echo "=== Registry logs before provider test ==="
+          docker logs terraform-registry
+
           # Test provider endpoint
-          curl -f http://localhost:5000/v1/providers/test/example/versions
-          curl -s http://localhost:5000/v1/providers/test/example/versions | jq -e '.versions[0].version == "1.0.0"'
+          echo "=== Testing provider versions endpoint ==="
+          curl -v http://localhost:5000/v1/providers/test/example/versions || true
+
+          # Check if it returns valid JSON with version
+          RESULT=$(curl -s http://localhost:5000/v1/providers/test/example/versions)
+          echo "Response: $RESULT"
+          echo "$RESULT" | jq -e '.versions[0].version == "1.0.0"'
 
       - name: Upload and test module
         run: |
