@@ -19,10 +19,11 @@ jobs:
           go-version: '1.26'
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.2.0
+          version: v2.12.0
           working-directory: registry-server
+          args: --timeout=5m
 
       - name: Check Go formatting
         working-directory: registry-server
