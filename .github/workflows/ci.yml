@@ -130,6 +130,10 @@ jobs:
 
       - name: Start registry
         run: |
+          # Create test-data directory with proper permissions
+          mkdir -p test-data
+          chmod 777 test-data
+
           docker run -d \
             --name terraform-registry \
             -p 5000:8080 \

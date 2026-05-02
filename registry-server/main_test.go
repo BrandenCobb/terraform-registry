@@ -677,7 +677,7 @@ func TestHealthHandlerStorageFailure(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
 
 	// Remove temp dir to cause storage failure
-	os.RemoveAll(tmpDir)
+	_ = os.RemoveAll(tmpDir)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
