@@ -214,18 +214,10 @@ jobs:
           # Create dummy provider binary and metadata
           mkdir -p test-data/providers/test/example/1.0.0
 
-          # Create index.json
+          # Create index.json (simple version array)
           cat > test-data/providers/test/example/index.json <<'EOF'
           {
-            "versions": [
-              {
-                "version": "1.0.0",
-                "protocols": ["5.0"],
-                "platforms": [
-                  {"os": "linux", "arch": "amd64"}
-                ]
-              }
-            ]
+            "versions": ["1.0.0"]
           }
           EOF
 
@@ -288,12 +280,10 @@ jobs:
           tar czf test-data/modules/test/vpc/aws/1.0.0/module.tar.gz -C temp-module .
           rm -rf temp-module
 
-          # Create module index
+          # Create module index (simple version array)
           cat > test-data/modules/test/vpc/aws/index.json <<'EOF'
           {
-            "modules": [
-              {"version": "1.0.0"}
-            ]
+            "versions": ["1.0.0"]
           }
           EOF
 
