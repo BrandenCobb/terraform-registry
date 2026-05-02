@@ -1,0 +1,43 @@
+# Terraform Registry - Quick Start Docker Compose
+#
+# This is a simple configuration for getting started quickly.
+# For advanced configurations including S3 storage, see examples/docker-compose/
+#
+# Usage:
+#   docker-compose up -d              # Start registry
+#   docker-compose logs -f            # View logs
+#   docker-compose down               # Stop registry
+#
+# Registry will be available at: http://localhost:5000
+#
+# For more examples, see:
+#   - examples/docker-compose/        Full examples (filesystem + S3)
+#   - examples/kubernetes/            Kubernetes deployment
+#   - examples/s3/                    Production S3 setup
+
+version: '3.8'
+
+services:
+  terraform-registry:
+    image: ghcr.io/brandencobb/terraform-registry:latest
+    container_name: terraform-registry
+    ports:
+      - "5000:8080"
+    volumes:
+      # Local storage for providers and modules
+      - registry-data:/var/lib/terraform-registry
+    environment:
+      STORAGE_TYPE: filesystem
+      BASE_URL: http://localhost:5000
+      PORT: 8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  registry-data:
+    driver: local

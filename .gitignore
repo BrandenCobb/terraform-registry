@@ -1,0 +1,66 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+terraform-registry
+terraform-provider-*
+*.test
+
+# Build artifacts
+dist/
+*.out
+coverage.out
+*.zip
+*.tar.gz
+
+# Go
+vendor/
+go.work
+go.work.sum
+
+# Data directories
+data/
+test-data/
+/tmp/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.tfvars
+!example.tfvars
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Secrets
+*.pem
+*.key
+*.crt
+*.env
+.envrc
+*-filled.json
+
+# Logs
+*.log
+
+# Test coverage
+*.cover
+*.coverprofile
+
+# Temporary files
+*.tmp
+*.bak
+*.old
+
+# Container volumes
+registry-data/

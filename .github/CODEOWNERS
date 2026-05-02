@@ -1,0 +1,32 @@
+# CODEOWNERS file
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repo
+* @BrandenCobb
+
+# Registry server code
+/registry-server/ @BrandenCobb
+
+# Docker and deployment
+/registry-server/Dockerfile @BrandenCobb
+/docker-compose.yml @BrandenCobb
+/deploy/ @BrandenCobb
+
+# CI/CD workflows
+/.github/workflows/ @BrandenCobb
+
+# Documentation
+/docs/ @BrandenCobb
+*.md @BrandenCobb
+
+# Scripts
+/scripts/ @BrandenCobb
+
+# Tests
+/tests/ @BrandenCobb
+*_test.go @BrandenCobb
+
+# Configuration files
+go.mod @BrandenCobb
+go.sum @BrandenCobb
+Makefile @BrandenCobb

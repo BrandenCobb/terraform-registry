@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # Filesystem storage example
+  registry-filesystem:
+    image: ghcr.io/brandencobb/terraform-registry:latest
+    container_name: terraform-registry-fs
+    ports:
+      - "5000:8080"
+    environment:
+      STORAGE_TYPE: filesystem
+      BASE_URL: http://localhost:5000
+      PORT: 8080
+    volumes:
+      - registry-data:/var/lib/terraform-registry
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # S3 storage example (requires AWS credentials)
+  registry-s3:
+    image: ghcr.io/brandencobb/terraform-registry:latest
+    container_name: terraform-registry-s3
+    ports:
+      - "5001:8080"
+    environment:
+      STORAGE_TYPE: s3
+      S3_BUCKET: terraform-registry
+      AWS_REGION: us-east-1
+      BASE_URL: http://localhost:5001
+      PORT: 8080
+      # AWS credentials from environment or IAM role
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # Optional: AWS_SESSION_TOKEN for temporary credentials
+      # AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    profiles:
+      - s3  # Only start with: docker-compose --profile s3 up
+
+volumes:
+  registry-data:
+    driver: local
