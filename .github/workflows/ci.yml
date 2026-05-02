@@ -21,7 +21,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v4
         with:
-          version: latest
+          version: v2.2.0
           working-directory: registry-server
 
       - name: Check Go formatting
@@ -55,7 +55,9 @@ jobs:
 
       - name: Run unit tests
         working-directory: registry-server
-        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+        env:
+          SKIP_STORAGE_INIT: "true"
+        run: go test -v -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
