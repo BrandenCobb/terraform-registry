@@ -14,13 +14,13 @@ func TestInitFunctions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
-		os.Setenv("STORAGE_PATH", tmpDir)
-		os.Setenv("BASE_URL", "http://test:9000")
+		_ = os.Setenv("STORAGE_PATH", tmpDir)
+		_ = os.Setenv("BASE_URL", "http://test:9000")
 		defer func() {
-			os.Unsetenv("STORAGE_PATH")
-			os.Unsetenv("BASE_URL")
+			_ = os.Unsetenv("STORAGE_PATH")
+			_ = os.Unsetenv("BASE_URL")
 		}()
 
 		initFilesystemStorage()
@@ -49,10 +49,10 @@ func TestInitFunctions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
-		os.Setenv("STORAGE_PATH", tmpDir)
-		defer os.Unsetenv("STORAGE_PATH")
+		_ = os.Setenv("STORAGE_PATH", tmpDir)
+		defer func() { _ = os.Unsetenv("STORAGE_PATH") }()
 
 		initFilesystemStorage()
 

@@ -12,7 +12,7 @@ func TestFilesystemStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Initialize filesystem storage
 	storage, err := NewFilesystemStorage(tmpDir, "http://localhost:8080")
@@ -117,7 +117,7 @@ func TestFilesystemStorageNestedDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err := NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
@@ -148,7 +148,7 @@ func TestFilesystemStoragePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err := NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
@@ -191,7 +191,7 @@ func TestFilesystemStorageServeFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err := NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
@@ -224,7 +224,7 @@ func TestFilesystemStorageServeFileNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err := NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
