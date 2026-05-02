@@ -143,7 +143,7 @@ jobs:
       - name: Test well-known endpoint
         run: |
           curl -f http://localhost:5000/.well-known/terraform.json
-          curl -s http://localhost:5000/.well-known/terraform.json | jq -e '.providers_v1'
+          curl -s http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1"'
 
       - name: Upload test provider
         run: |
