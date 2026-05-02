@@ -37,7 +37,7 @@ func setupTestRouter(t *testing.T) (*mux.Router, *FilesystemStorage, string) {
 
 func TestWellKnownHandler(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/.well-known/terraform.json", nil)
 	w := httptest.NewRecorder()
@@ -63,7 +63,7 @@ func TestWellKnownHandler(t *testing.T) {
 
 func TestHealthHandler(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func TestHealthHandler(t *testing.T) {
 
 func TestProviderVersionsHandler(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create test provider structure
 	namespace := "hashicorp"
@@ -134,7 +134,7 @@ func TestProviderVersionsHandler(t *testing.T) {
 
 func TestProviderVersionsHandlerNotFound(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/v1/providers/nonexistent/provider/versions", nil)
 	w := httptest.NewRecorder()
@@ -157,7 +157,7 @@ func TestProviderVersionsHandlerNotFound(t *testing.T) {
 
 func TestProviderDownloadHandler(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	namespace := "hashicorp"
 	providerType := "aws"
@@ -213,7 +213,7 @@ func TestProviderDownloadHandler(t *testing.T) {
 
 func TestModuleVersionsHandler(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	namespace := "example"
 	name := "vpc"
@@ -252,7 +252,7 @@ func TestModuleVersionsHandler(t *testing.T) {
 
 func TestModuleDownloadHandler(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	namespace := "example"
 	name := "vpc"
@@ -283,7 +283,7 @@ func TestModuleDownloadHandler(t *testing.T) {
 
 func TestModuleLatestDownloadHandler(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	namespace := "example"
 	name := "vpc"
@@ -329,7 +329,7 @@ func TestModuleLatestDownloadHandler(t *testing.T) {
 
 func TestFileDownloadHandler(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create test file
 	fileKey := "test/file.zip"
@@ -360,7 +360,7 @@ func TestScanProviderVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
@@ -400,7 +400,7 @@ func TestGetProviderPlatforms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
@@ -441,7 +441,7 @@ func TestScanModuleVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
 	if err != nil {
@@ -473,7 +473,7 @@ func TestScanModuleVersions(t *testing.T) {
 
 func TestProviderDownloadHandlerNotFound(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/1.0.0/download/linux/amd64", nil)
 	w := httptest.NewRecorder()
@@ -486,7 +486,7 @@ func TestProviderDownloadHandlerNotFound(t *testing.T) {
 
 func TestProviderDownloadHandlerInvalidMetadata(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create invalid JSON metadata
 	metaKey := filepath.Join("providers", "hashicorp", "aws", "1.0.0", "linux_amd64.json")
@@ -505,7 +505,7 @@ func TestProviderDownloadHandlerInvalidMetadata(t *testing.T) {
 
 func TestModuleVersionsHandlerNotFound(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/v1/modules/nonexistent/module/aws/versions", nil)
 	w := httptest.NewRecorder()
@@ -527,7 +527,7 @@ func TestModuleVersionsHandlerNotFound(t *testing.T) {
 
 func TestModuleVersionsHandlerInvalidIndex(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create invalid JSON index
 	indexKey := filepath.Join("modules", "example", "vpc", "aws", "index.json")
@@ -546,7 +546,7 @@ func TestModuleVersionsHandlerInvalidIndex(t *testing.T) {
 
 func TestModuleDownloadHandlerNotFound(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/1.0.0/download", nil)
 	w := httptest.NewRecorder()
@@ -566,7 +566,7 @@ func TestModuleDownloadHandlerNotFound(t *testing.T) {
 
 func TestModuleLatestDownloadHandlerNotFound(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/v1/modules/nonexistent/module/aws/download", nil)
 	w := httptest.NewRecorder()
@@ -579,7 +579,7 @@ func TestModuleLatestDownloadHandlerNotFound(t *testing.T) {
 
 func TestModuleLatestDownloadHandlerInvalidIndex(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create invalid JSON index
 	indexKey := filepath.Join("modules", "example", "vpc", "aws", "index.json")
@@ -598,7 +598,7 @@ func TestModuleLatestDownloadHandlerInvalidIndex(t *testing.T) {
 
 func TestModuleLatestDownloadHandlerNoVersions(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create empty index
 	index := Index{Versions: []string{}}
@@ -619,7 +619,7 @@ func TestModuleLatestDownloadHandlerNoVersions(t *testing.T) {
 
 func TestFileDownloadHandlerNotFound(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/download/nonexistent/file.zip", nil)
 	w := httptest.NewRecorder()
@@ -632,7 +632,7 @@ func TestFileDownloadHandlerNotFound(t *testing.T) {
 
 func TestFileDownloadHandlerTarGz(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create test file
 	fileKey := "test/file.tar.gz"
@@ -656,7 +656,7 @@ func TestFileDownloadHandlerTarGz(t *testing.T) {
 
 func TestProviderVersionsHandlerInvalidIndex(t *testing.T) {
 	router, fs, tmpDir := setupTestRouter(t)
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Create invalid JSON index
 	indexKey := filepath.Join("providers", "hashicorp", "aws", "index.json")
@@ -677,7 +677,7 @@ func TestHealthHandlerStorageFailure(t *testing.T) {
 	router, _, tmpDir := setupTestRouter(t)
 
 	// Remove temp dir to cause storage failure
-	os.RemoveAll(tmpDir)
+	_ = os.RemoveAll(tmpDir)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()

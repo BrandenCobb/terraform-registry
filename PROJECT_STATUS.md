@@ -42,6 +42,8 @@ Terraform Registry is production-ready and GitHub-publishable. This document sum
 - [x] Multi-platform builds (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64)
 - [x] Docker image building and publishing
 - [x] Automated testing and linting
+- [x] Security scanning (Trivy, Gosec, govulncheck)
+- [x] SARIF upload to GitHub Security tab
 
 ### Scripts
 - [x] Provider upload script (filesystem and S3)
@@ -110,7 +112,7 @@ After publishing to GitHub:
 5. **Integrations**
    - [ ] Set up Codecov for coverage reporting
    - [x] Configure Dependabot for dependency updates (Go, Docker, GitHub Actions)
-   - [ ] Set up container scanning (Snyk, Trivy, etc.)
+   - [x] Set up container scanning (Trivy for containers, Gosec for Go code, govulncheck)
 
 ## 📊 Project Metrics
 
