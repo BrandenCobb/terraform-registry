@@ -11,6 +11,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o terraform-registr
 
 FROM alpine:latest
 
+LABEL org.opencontainers.image.source="https://github.com/BrandenCobb/terraform-registry"
+LABEL org.opencontainers.image.description="Self-hosted Terraform registry for providers and modules"
+LABEL org.opencontainers.image.licenses="MIT"
+
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
