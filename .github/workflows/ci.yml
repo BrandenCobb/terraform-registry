@@ -146,31 +146,58 @@ jobs:
           curl -f http://localhost:5000/.well-known/terraform.json
           curl -s http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1"'
 
-      - name: Upload test provider
+      - name: Upload and test provider
         run: |
-          # Create dummy provider binary
-          mkdir -p test-files
-          echo "test" > test-files/terraform-provider-test_v1.0.0_x5
+          # Create dummy provider binary and metadata
+          mkdir -p test-data/providers/test/example
 
-          # Upload provider
-          ./scripts/upload-provider.sh \
-            --storage filesystem \
-            --path ./test-data \
-            --namespace test \
-            --name example \
-            --version 1.0.0 \
-            --binary test-files/terraform-provider-test_v1.0.0_x5
+          # Create index.json
+          cat > test-data/providers/test/example/index.json <<'EOF'
+          {
+            "versions": [
+              {
+                "version": "1.0.0",
+                "protocols": ["5.0"],
+                "platforms": [
+                  {"os": "linux", "arch": "amd64"}
+                ]
+              }
+            ]
+          }
+          EOF
 
-      - name: Test provider endpoint
-        run: |
+          # Create version directory and platform metadata
+          mkdir -p test-data/providers/test/example/1.0.0
+          echo "dummy provider binary" > test-data/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip
+
+          SHASUM=$(sha256sum test-data/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip | cut -d' ' -f1)
+
+          cat > test-data/providers/test/example/1.0.0/linux_amd64.json <<EOF
+          {
+            "protocols": ["5.0"],
+            "os": "linux",
+            "arch": "amd64",
+            "filename": "terraform-provider-example_v1.0.0_linux_amd64.zip",
+            "download_url": "http://localhost:5000/download/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip",
+            "shasum": "$SHASUM",
+            "signing_keys": {
+              "gpg_public_keys": []
+            }
+          }
+          EOF
+
+          # Test provider endpoint
           curl -f http://localhost:5000/v1/providers/test/example/versions
           curl -s http://localhost:5000/v1/providers/test/example/versions | jq -e '.versions[0].version == "1.0.0"'
 
-      - name: Upload test module
+      - name: Upload and test module
         run: |
           # Create dummy module
-          mkdir -p test-module
-          cat > test-module/main.tf <<EOF
+          mkdir -p test-data/modules/test/vpc/aws/1.0.0
+
+          # Create module tarball
+          mkdir -p temp-module
+          cat > temp-module/main.tf <<'EOF'
           variable "test" {
             type = string
           }
@@ -179,18 +206,19 @@ jobs:
           }
           EOF
 
-          # Upload module
-          ./scripts/upload-module.sh \
-            --storage filesystem \
-            --path ./test-data \
-            --namespace test \
-            --name vpc \
-            --provider aws \
-            --version 1.0.0 \
-            --source test-module/
+          tar czf test-data/modules/test/vpc/aws/1.0.0/module.tar.gz -C temp-module .
+          rm -rf temp-module
 
-      - name: Test module endpoint
-        run: |
+          # Create module index
+          cat > test-data/modules/test/vpc/aws/index.json <<'EOF'
+          {
+            "modules": [
+              {"version": "1.0.0"}
+            ]
+          }
+          EOF
+
+          # Test module endpoints
           curl -f http://localhost:5000/v1/modules/test/vpc/aws/versions
           curl -s http://localhost:5000/v1/modules/test/vpc/aws/versions | jq -e '.modules[0].version == "1.0.0"'
 

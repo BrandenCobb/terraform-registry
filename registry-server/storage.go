@@ -42,7 +42,7 @@ func (s *S3Storage) GetObject(key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	data, err := io.ReadAll(result.Body)
 	if err != nil {
@@ -203,7 +203,7 @@ func (f *FilesystemStorage) ServeFile(w io.Writer, key string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	_, err = io.Copy(w, file)
 	return err
