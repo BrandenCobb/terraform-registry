@@ -65,7 +65,7 @@ jobs:
         run: go test -v -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         if: github.event_name == 'push'
         with:
           files: ./registry-server/coverage.out
