@@ -1,0 +1,4 @@
+registry.local {
+    tls /certs/registry.local.pem /certs/registry.local-key.pem
+    reverse_proxy terraform-registry:8080
+}

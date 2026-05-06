@@ -59,19 +59,37 @@ docker-compose up -d
   --source ./my-vpc-module/
 ```
 
-### 3. Configure Terraform
+### 3. Enable HTTPS (Required by Terraform)
+
+**⚠️ Important:** Terraform requires HTTPS for network mirrors. Follow the [HTTPS Setup Guide](docs/HTTPS.md) to configure local HTTPS with mkcert + Caddy.
+
+Quick setup:
+```bash
+# Install mkcert and generate certificates
+mkcert -install
+mkcert registry.local localhost 127.0.0.1
+
+# Add to /etc/hosts
+echo "127.0.0.1 registry.local" | sudo tee -a /etc/hosts
+
+# Restart with HTTPS
+docker-compose down
+docker-compose up -d
+```
+
+### 4. Configure Terraform
 
 ```hcl
 # ~/.terraformrc
 provider_installation {
   network_mirror {
-    url = "http://localhost:5000/"
+    url = "https://registry.local/"  # HTTPS required
     include = ["*/*"]
   }
 }
 ```
 
-### 4. Use in Your Code
+### 5. Use in Your Code
 
 ```hcl
 terraform {
@@ -94,6 +112,7 @@ module "vpc" {
 ## Documentation
 
 - [Quick Start Guide](docs/QUICKSTART.md)
+- [HTTPS Setup Guide](docs/HTTPS.md) - **Required for Terraform** - Local and production HTTPS
 - [Deployment Guide](docs/DEPLOYMENT.md) - Kubernetes, Docker, AWS
 - [Provider Build Guide](docs/PROVIDER_BUILD.md) - Building custom providers
 - [API Reference](docs/API.md) - REST API documentation
@@ -212,7 +231,7 @@ See [API Reference](docs/API.md) for complete documentation.
 
 Check out the [examples/](examples/) directory for:
 
-- Kubernetes deployments with PVC and IRSA
+- Kubernetes deployments with PVC or S3 with IRSA
 - Docker Compose configurations
 - Sample Terraform configurations
 - Upload script examples

@@ -1,0 +1,19 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: terraform-registry
+  namespace: terraform-registry
+spec:
+  hosts:
+  - terraform-registry.internal.example.com
+  gateways:
+  - istio-gateway/istio-ingress
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: terraform-registry.terraform-registry.svc.cluster.local
+        port:
+          number: 80
