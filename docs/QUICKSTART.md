@@ -4,10 +4,11 @@ Get up and running with Terraform Registry in 5 minutes.
 
 ## Prerequisites
 
-- Docker installed
+- Docker and Docker Compose installed
 - `curl` or `wget`
 - `jq` for JSON parsing (optional)
 - Terraform 1.5+ (for testing)
+- **For Terraform integration:** mkcert for HTTPS (see [HTTPS Setup](HTTPS.md))
 
 ## Option 1: Docker (Recommended)
 
@@ -80,19 +81,42 @@ Upload it:
   --source test-module/
 ```
 
-### 5. Configure Terraform
+### 5. Enable HTTPS (Required for Terraform)
+
+**⚠️ Important:** Terraform requires HTTPS for network mirrors. See the [HTTPS Setup Guide](HTTPS.md) for complete instructions.
+
+Quick HTTPS setup:
+```bash
+# Install mkcert (one-time setup)
+wget https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-linux-amd64
+chmod +x mkcert-v1.4.4-linux-amd64
+sudo mv mkcert-v1.4.4-linux-amd64 /usr/local/bin/mkcert
+mkcert -install
+
+# Generate certificates
+mkcert registry.local localhost 127.0.0.1
+
+# Add to /etc/hosts
+echo "127.0.0.1 registry.local" | sudo tee -a /etc/hosts
+
+# Restart with HTTPS proxy
+docker-compose down
+docker-compose up -d  # Starts registry + Caddy proxy
+```
+
+### 6. Configure Terraform
 
 Create `~/.terraformrc`:
 ```hcl
 provider_installation {
   network_mirror {
-    url = "http://localhost:5000/"
+    url = "https://registry.local/"  # HTTPS required
     include = ["*/*"]
   }
 }
 ```
 
-### 6. Test with Terraform
+### 7. Test with Terraform
 
 Create `test.tf`:
 ```hcl

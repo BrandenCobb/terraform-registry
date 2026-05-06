@@ -12,6 +12,7 @@ VERSION=""
 BINARY=""
 OS="linux"
 ARCH="amd64"
+BASE_URL="http://localhost:5000"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -51,6 +52,10 @@ while [[ $# -gt 0 ]]; do
       ARCH="$2"
       shift 2
       ;;
+    --base-url)
+      BASE_URL="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -77,6 +82,11 @@ fi
 if [[ "$STORAGE_TYPE" == "filesystem" && -z "$STORAGE_PATH" ]]; then
   echo "Error: --path required for filesystem storage"
   exit 1
+fi
+
+# Convert storage path to absolute path
+if [[ "$STORAGE_TYPE" == "filesystem" ]]; then
+  STORAGE_PATH=$(realpath "$STORAGE_PATH")
 fi
 
 if [[ ! -f "$BINARY" ]]; then
@@ -113,11 +123,28 @@ echo "Calculating SHA256 checksum..."
 SHASUM=$(sha256sum "$FILENAME" | awk '{print $1}')
 echo "  SHA256: $SHASUM"
 
-# Create metadata JSON
+# Determine download URL based on storage type
+if [[ "$STORAGE_TYPE" == "s3" ]]; then
+  # For S3, the registry will generate presigned URLs dynamically
+  # Just store the S3 path; registry will create presigned URL on request
+  DOWNLOAD_URL="s3://${BUCKET}/providers/${NAMESPACE}/${NAME}/${VERSION}/${FILENAME}"
+else
+  # For filesystem, use registry's /download endpoint
+  DOWNLOAD_URL="${BASE_URL}/download/providers/${NAMESPACE}/${NAME}/${VERSION}/${FILENAME}"
+fi
+
+# Create metadata JSON matching registry format
 cat > "${PLATFORM}.json" <<EOF
 {
+  "protocols": ["5.0"],
+  "os": "$OS",
+  "arch": "$ARCH",
   "filename": "$FILENAME",
-  "shasum": "$SHASUM"
+  "download_url": "$DOWNLOAD_URL",
+  "shasum": "$SHASUM",
+  "signing_keys": {
+    "gpg_public_keys": []
+  }
 }
 EOF
 

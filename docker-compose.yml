@@ -21,11 +21,9 @@ services:
   terraform-registry:
     image: ghcr.io/brandencobb/terraform-registry:latest
     container_name: terraform-registry
-    ports:
-      - "5000:8080"
     volumes:
       # Local storage for providers and modules
-      - registry-data:/var/lib/terraform-registry
+      - ./data:/var/lib/terraform-registry
     environment:
       STORAGE_TYPE: filesystem
       BASE_URL: http://localhost:5000
@@ -38,6 +36,5 @@ services:
       retries: 3
       start_period: 10s
 
-volumes:
-  registry-data:
-    driver: local
+# Note: For HTTPS support, create docker-compose.override.yml with Caddy proxy
+# See docs/QUICKSTART.md for instructions

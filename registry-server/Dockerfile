@@ -17,13 +17,14 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apk --no-cache add ca-certificates
 
-WORKDIR /root/
+WORKDIR /app
 
 COPY --from=builder /app/terraform-registry .
 
 # Create default storage directory
 RUN mkdir -p /var/lib/terraform-registry/providers /var/lib/terraform-registry/modules && \
-    chmod -R 755 /var/lib/terraform-registry
+    chmod -R 755 /var/lib/terraform-registry && \
+    chmod +x /app/terraform-registry
 
 EXPOSE 8080
 

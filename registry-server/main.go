@@ -161,9 +161,13 @@ func main() {
 	// Discovery endpoint
 	r.HandleFunc("/.well-known/terraform.json", wellKnownHandler).Methods("GET")
 
-	// Provider endpoints
+	// Provider endpoints (registry protocol)
 	r.HandleFunc("/v1/providers/{namespace}/{type}/versions", providerVersionsHandler).Methods("GET")
 	r.HandleFunc("/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}", providerDownloadHandler).Methods("GET")
+
+	// Network mirror endpoints (Terraform CLI format)
+	r.HandleFunc("/{hostname}/{namespace}/{type}/index.json", networkMirrorIndexHandler).Methods("GET")
+	r.HandleFunc("/{hostname}/{namespace}/{type}/{version}.json", networkMirrorVersionHandler).Methods("GET")
 
 	// Module endpoints
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/versions", moduleVersionsHandler).Methods("GET")
@@ -287,6 +291,110 @@ func providerDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		SigningKeys: SigningKeys{
 			GPGPublicKeys: []GPGPublicKey{},
 		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// Network Mirror Handlers (Terraform CLI network_mirror format)
+func networkMirrorIndexHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	// hostname is ignored (e.g., registry.terraform.io)
+	namespace := vars["namespace"]
+	providerType := vars["type"]
+
+	log.Printf("Network mirror index request: %s/%s", namespace, providerType)
+
+	// Get versions using existing logic
+	key := fmt.Sprintf("providers/%s/%s/index.json", namespace, providerType)
+	obj, err := storage.GetObject(key)
+
+	var versions []string
+	if err != nil {
+		// Fallback to scanning
+		providerVersions, err := scanProviderVersions(namespace, providerType)
+		if err != nil {
+			http.Error(w, "Provider not found", http.StatusNotFound)
+			return
+		}
+		for _, pv := range providerVersions {
+			versions = append(versions, pv.Version)
+		}
+	} else {
+		var index struct {
+			Versions []string `json:"versions"`
+		}
+		if err := json.Unmarshal(obj, &index); err != nil {
+			http.Error(w, "Invalid index format", http.StatusInternalServerError)
+			return
+		}
+		versions = index.Versions
+	}
+
+	// Network mirror index format: {"versions":{"1.0.0":{},"2.0.0":{}}}
+	versionMap := make(map[string]struct{})
+	for _, v := range versions {
+		versionMap[v] = struct{}{}
+	}
+
+	response := map[string]interface{}{
+		"versions": versionMap,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func networkMirrorVersionHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	namespace := vars["namespace"]
+	providerType := vars["type"]
+	version := vars["version"]
+
+	log.Printf("Network mirror version request: %s/%s@%s", namespace, providerType, version)
+
+	// Get all platforms for this version
+	platforms, err := getProviderPlatforms(namespace, providerType, version)
+	if err != nil {
+		http.Error(w, "Version not found", http.StatusNotFound)
+		return
+	}
+
+	// Network mirror version format: {"archives":{"linux_amd64":{"url":"...","hashes":["h1:..."]}}}
+	archives := make(map[string]map[string]interface{})
+
+	for _, platform := range platforms {
+		platformKey := fmt.Sprintf("%s_%s", platform.OS, platform.Arch)
+		metadataKey := fmt.Sprintf("providers/%s/%s/%s/%s_%s.json", namespace, providerType, version, platform.OS, platform.Arch)
+
+		obj, err := storage.GetObject(metadataKey)
+		if err != nil {
+			continue
+		}
+
+		var metadata struct {
+			Filename string `json:"filename"`
+			Shasum   string `json:"shasum"`
+		}
+		if err := json.Unmarshal(obj, &metadata); err != nil {
+			continue
+		}
+
+		zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, metadata.Filename)
+		downloadURL, err := storage.GenerateDownloadURL(zipKey)
+		if err != nil {
+			continue
+		}
+
+		archives[platformKey] = map[string]interface{}{
+			"url":    downloadURL,
+			"hashes": []string{fmt.Sprintf("zh:%s", metadata.Shasum)},
+		}
+	}
+
+	response := map[string]interface{}{
+		"archives": archives,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
