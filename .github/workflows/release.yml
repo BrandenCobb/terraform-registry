@@ -81,6 +81,16 @@ jobs:
               -ldflags="-w -s" \
               -o "../dist/${OUTPUT}" \
               .
+
+            # Archive
+            cd ../dist
+            if [ "$GOOS" = "windows" ]; then
+              zip "tfreg-${GOOS}-${GOARCH}.zip" "${OUTPUT}"
+            else
+              tar czf "tfreg-${GOOS}-${GOARCH}.tar.gz" "${OUTPUT}"
+            fi
+            rm "${OUTPUT}"
+            cd ../cmd/tfreg
           done
 
       - name: Generate checksums
