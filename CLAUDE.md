@@ -1,164 +1,152 @@
 # CLAUDE.md
 
-Project-specific guidance for the S3-backed Terraform provider registry.
+Project-specific guidance for the self-hosted Terraform Registry.
 
 ## Project Overview
 
-A self-hosted Terraform provider registry backed by S3, designed for AWS GovCloud environments. Providers are built separately, stored in S3, and served via a lightweight Go HTTP server running in EKS with IRSA for secure S3 access.
+A full-featured self-hosted Terraform registry for versioned providers and modules. Supports both S3 and filesystem storage backends, container-deployable with Docker Compose, includes a web UI for browsing/uploading, a management API, and a CLI tool (`tfreg`) for push/pull/bundle/list/delete operations.
 
 ## Architecture
 
-- **Registry Server**: Go application implementing Terraform's provider protocol
-- **Storage**: S3 bucket with versioning and encryption
-- **Deployment**: Kubernetes (EKS) with IRSA for S3 access
-- **Client**: Terraform uses network_mirror to fetch providers from registry
+- **Registry Server**: Go HTTP server implementing Terraform's provider and module registry protocol
+- **Management API**: REST API for CRUD operations on providers and modules (`/api/v1/`)
+- **Web UI**: Embedded SPA dashboard for browsing and uploading (`/ui`)
+- **CLI Tool** (`tfreg`): Unified command-line tool for push/pull/bundle/list/delete
+- **Storage**: Pluggable backend — S3 (production) or filesystem (local/dev)
+- **Auth**: Optional API key auth via `REGISTRY_API_KEY` env var
+- **Deployment**: Docker Compose (standalone) or Kubernetes (EKS with IRSA)
 
 ## Key Files
 
-- [registry-server/main.go](registry-server/main.go): Go server implementing provider protocol
-- [provider-scripts/upload-provider.sh](provider-scripts/upload-provider.sh): Script to upload providers to S3
-- [examples/kubernetes/manifests/](examples/kubernetes/manifests/): Kubernetes manifests for EKS deployment
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): Full deployment guide
-- [docs/PROVIDER_BUILD.md](docs/PROVIDER_BUILD.md): Guide for building providers
+### Server (registry-server/)
+- [main.go](registry-server/main.go): HTTP router, Terraform protocol handlers
+- [storage.go](registry-server/storage.go): Storage interface (S3 + filesystem)
+- [api.go](registry-server/api.go): Management API handlers (upload/delete/list/stats)
+- [auth.go](registry-server/auth.go): API key authentication middleware
+- [ui.go](registry-server/ui.go): Embedded web UI (Go embed)
+- [ui/](registry-server/ui/): Web UI assets (HTML, CSS, JS)
 
-## Common Tasks
+### CLI (cmd/tfreg/)
+- [main.go](cmd/tfreg/main.go): CLI entry point with all commands
+- [archive.go](cmd/tfreg/archive.go): Zip and tar.gz creation helpers
 
-### Build and Deploy Registry Server
+### Infrastructure
+- [Dockerfile](Dockerfile): Multi-stage build (server + CLI)
+- [docker-compose.yml](docker-compose.yml): Quick start compose
+- [Caddyfile](Caddyfile): HTTPS reverse proxy config
+- [scripts/](scripts/): Legacy bash upload scripts (prefer `tfreg` CLI)
 
+## Common Commands
+
+### Build and Run
 ```bash
-make build
-make push
-make deploy
+# Build server
+cd registry-server && go build -o terraform-registry .
+
+# Build CLI
+cd cmd/tfreg && go build -o tfreg .
+
+# Run locally
+cd registry-server && STORAGE_TYPE=filesystem STORAGE_PATH=./data BASE_URL=http://localhost:8080 ./terraform-registry
+
+# Docker
+docker-compose up -d
 ```
 
-### Initialize S3 Bucket
-
+### Run Tests
 ```bash
-make init-s3 S3_BUCKET=terraform-registry
+cd registry-server && SKIP_STORAGE_INIT=true go test -v ./...
 ```
 
-### Upload a Provider
-
+### CLI Usage
 ```bash
-cd provider-scripts
-./upload-provider.sh \
-  --bucket terraform-registry \
-  --namespace hashicorp \
-  --name aws \
-  --version 6.31.0 \
-  --binary /path/to/terraform-provider-aws_v6.31.0_x5
+# Set defaults
+export TFREG_REGISTRY=http://localhost:8080
+export TFREG_API_KEY=your-key  # optional
+
+# Push artifacts
+tfreg push provider --namespace hashicorp --name aws --version 6.31.0 --file provider.zip
+tfreg push module --namespace example --name vpc --provider aws --version 1.0.0 --file module.tar.gz
+
+# Pull artifacts
+tfreg pull provider --namespace hashicorp --name aws --version 6.31.0
+tfreg pull module --namespace example --name vpc --provider aws --version 1.0.0
+
+# List registry contents
+tfreg list providers
+tfreg list modules
+
+# Bundle local files for later upload
+tfreg bundle provider --namespace hashicorp --name aws --version 6.31.0 --binary ./terraform-provider-aws
+tfreg bundle module --namespace example --name vpc --provider aws --version 1.0.0 --source ./my-module/
+
+# Delete versions
+tfreg delete provider --namespace hashicorp --name aws --version 6.31.0
+tfreg delete module --namespace example --name vpc --provider aws --version 1.0.0
 ```
 
-### Test Registry
-
+### Management API
 ```bash
-kubectl port-forward -n terraform-registry svc/terraform-registry 8080:80
-curl http://localhost:8080/.well-known/terraform.json
-curl http://localhost:8080/v1/providers/hashicorp/aws/versions
+# List
+curl http://localhost:8080/api/v1/providers
+curl http://localhost:8080/api/v1/modules
+curl http://localhost:8080/api/v1/stats
+
+# Upload (requires API key if REGISTRY_API_KEY is set)
+curl -X POST http://localhost:8080/api/v1/providers/hashicorp/aws/1.0.0/linux/amd64 \
+  -H "X-API-Key: your-key" -F "file=@provider.zip"
+
+curl -X POST http://localhost:8080/api/v1/modules/example/vpc/aws/1.0.0 \
+  -H "X-API-Key: your-key" -F "file=@module.tar.gz"
+
+# Delete
+curl -X DELETE http://localhost:8080/api/v1/providers/hashicorp/aws/1.0.0 -H "X-API-Key: your-key"
 ```
 
-## S3 Bucket Structure
+## Storage Structure
 
 ```
-s3://terraform-registry/
-├── .well-known/terraform.json          # Protocol discovery
-├── {namespace}/{name}/
-│   ├── index.json                      # Version list
-│   └── {version}/
-│       ├── {os}_{arch}.json            # Platform metadata (filename + shasum)
-│       └── terraform-provider-{name}_{version}_{os}_{arch}.zip
+providers/{namespace}/{name}/index.json          # Version list
+providers/{namespace}/{name}/{version}/
+  {os}_{arch}.json                                # Platform metadata
+  terraform-provider-{name}_{version}_{os}_{arch}.zip
+
+modules/{namespace}/{name}/{provider}/index.json  # Version list
+modules/{namespace}/{name}/{provider}/{version}/
+  module.tar.gz
 ```
 
-## Terraform Provider Protocol
+## Environment Variables
 
-The registry implements these endpoints:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STORAGE_TYPE` | `filesystem` | `filesystem` or `s3` |
+| `STORAGE_PATH` | `/var/lib/terraform-registry` | Local storage path |
+| `BASE_URL` | `http://localhost:8080` | Public URL for download links |
+| `PORT` | `8080` | Server port |
+| `S3_BUCKET` | `terraform-registry` | S3 bucket name (when STORAGE_TYPE=s3) |
+| `AWS_REGION` | `us-gov-west-1` | AWS region |
+| `REGISTRY_API_KEY` | (empty) | API key for management endpoints (empty = no auth) |
 
-1. `/.well-known/terraform.json` - Discovery endpoint
-2. `/v1/providers/{namespace}/{type}/versions` - List available versions
-3. `/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}` - Download metadata with presigned S3 URL
+## Terraform Protocol
 
-## IRSA Configuration
-
-The registry uses IRSA (IAM Roles for Service Accounts) to access S3 without static credentials:
-
-1. EKS OIDC provider trusts the service account
-2. Service account has annotation with IAM role ARN
-3. IAM role has policy allowing S3 access
-4. Pods automatically get temporary credentials via AWS SDK
-
-## Development
-
-### Run Locally
-
-```bash
-cd registry-server
-export S3_BUCKET=terraform-registry
-export AWS_REGION=us-west-1
-go run main.go
-```
-
-Access at http://localhost:8080
-
-### Add New Provider
-
-1. Create provider build repo (see [docs/PROVIDER_BUILD.md](docs/PROVIDER_BUILD.md))
-2. Build provider binary with CVE fixes
-3. Upload to S3 using `upload-provider.sh`
-4. Provider is immediately available via registry
-
-## Security
-
-- S3 bucket has versioning, encryption, and public access blocked
-- Registry uses IRSA (no static credentials)
-- Providers validated with SHA256 checksums
-- Optional: GPG signing for provider artifacts
-- Network policies restrict registry pod access
-
-## Troubleshooting
-
-### Provider not found
-
-Check S3 structure:
-```bash
-aws s3 ls s3://terraform-registry/{namespace}/{name}/ --recursive
-```
-
-### IRSA not working
-
-Verify service account:
-```bash
-kubectl get sa -n terraform-registry terraform-registry -o yaml
-kubectl describe pod -n terraform-registry -l app=terraform-registry
-```
-
-Check for AWS environment variables in pod:
-```bash
-kubectl exec -n terraform-registry -it deployment/terraform-registry -- env | grep AWS
-```
-
-### Presigned URL errors
-
-Verify IAM role policy allows `s3:GetObject`:
-```bash
-aws iam get-role-policy --role-name terraform-registry-s3-access --policy-name S3Access
-```
+The registry implements:
+1. `/.well-known/terraform.json` — Protocol discovery
+2. `/v1/providers/{ns}/{type}/versions` — List provider versions
+3. `/v1/providers/{ns}/{type}/{ver}/download/{os}/{arch}` — Download metadata
+4. `/{hostname}/{ns}/{type}/index.json` — Network mirror index
+5. `/{hostname}/{ns}/{type}/{ver}.json` — Network mirror version
+6. `/v1/modules/{ns}/{name}/{provider}/versions` — List module versions
+7. `/v1/modules/{ns}/{name}/{provider}/{ver}/download` — Download module
 
 ## Integration with adv12-deployer
 
-This registry is designed to work with the `adv12-deployer` container image. Instead of baking providers into the deployer image, they can be pulled at runtime:
-
-1. Build providers separately (faster, parallel builds)
-2. Upload to S3 registry
-3. Configure `.terraformrc` in deployer to use network_mirror
-4. Terraform pulls providers on-demand during `terraform init`
-
-Benefits:
-- Smaller deployer image (~500MB vs 2GB+)
-- Faster deployer builds (5-10 min vs 60 min)
-- Provider versions can be updated without rebuilding deployer
-- Different projects can use different provider versions
-
-## Related Projects
-
-- [adv12-deployer](../adv12-deployer): Container image using these providers
-- Provider build repos: Separate repos for each provider with CI/CD
+Configure `.terraformrc` in deployer to use network_mirror:
+```hcl
+provider_installation {
+  network_mirror {
+    url = "https://registry.internal.example.com/"
+    include = ["*/*"]
+  }
+}
+```

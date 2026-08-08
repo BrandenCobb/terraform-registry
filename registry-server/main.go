@@ -180,6 +180,28 @@ func main() {
 	// Health check
 	r.HandleFunc("/health", healthHandler).Methods("GET")
 
+	// Management API endpoints
+	api := r.PathPrefix("/api/v1").Subrouter()
+	api.HandleFunc("/stats", registryStatsHandler).Methods("GET")
+
+	// Provider management
+	api.HandleFunc("/providers", listProvidersHandler).Methods("GET")
+	api.HandleFunc("/providers/{namespace}/{name}", getProviderHandler).Methods("GET")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}/{os}/{arch}", requireAuth(uploadProviderHandler)).Methods("POST")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}", requireAuth(deleteProviderVersionHandler)).Methods("DELETE")
+
+	// Module management
+	api.HandleFunc("/modules", listModulesHandler).Methods("GET")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}", getModuleHandler).Methods("GET")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", requireAuth(uploadModuleHandler)).Methods("POST")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", requireAuth(deleteModuleVersionHandler)).Methods("DELETE")
+
+	// Web UI
+	r.PathPrefix("/ui").HandlerFunc(uiHandler)
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui", http.StatusFound)
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

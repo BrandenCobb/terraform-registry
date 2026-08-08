@@ -117,7 +117,15 @@ jobs:
           CGO_ENABLED=0 go build -v \
             -ldflags="-w -s" \
             -o terraform-registry \
-            main.go storage.go
+            main.go storage.go api.go auth.go ui.go
+
+      - name: Build CLI tool
+        working-directory: cmd/tfreg
+        run: |
+          CGO_ENABLED=0 go build -v \
+            -ldflags="-w -s" \
+            -o tfreg \
+            .
 
       - name: Test binary
         working-directory: registry-server
@@ -136,8 +144,8 @@ jobs:
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
-          context: ./registry-server
-          file: ./registry-server/Dockerfile
+          context: .
+          file: ./Dockerfile
           tags: terraform-registry:test
           push: false
           cache-from: type=gha
@@ -178,8 +186,8 @@ jobs:
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
-          context: ./registry-server
-          file: ./registry-server/Dockerfile
+          context: .
+          file: ./Dockerfile
           tags: terraform-registry:test
           load: true
 
@@ -260,6 +268,27 @@ jobs:
           RESULT=$(curl -s http://localhost:5000/v1/providers/test/example/versions)
           echo "Response: $RESULT"
           echo "$RESULT" | jq -e '.versions[0].version == "1.0.0"'
+
+      - name: Test management API
+        run: |
+          # Test stats endpoint
+          curl -s http://localhost:5000/api/v1/stats | jq -e '.success == true'
+
+          # Test list providers
+          curl -s http://localhost:5000/api/v1/providers | jq -e '.success == true'
+
+          # Test upload via API
+          echo "test module content" | gzip > /tmp/test-module.tar.gz
+          curl -s -X POST http://localhost:5000/api/v1/modules/test/vpc/aws/1.0.0 \
+            -F "file=@/tmp/test-module.tar.gz" | jq -e '.success == true'
+
+          # Test list modules
+          curl -s http://localhost:5000/api/v1/modules | jq -e '.success == true'
+          curl -s http://localhost:5000/api/v1/modules | jq -e '.data | length > 0'
+
+      - name: Test web UI
+        run: |
+          curl -s http://localhost:5000/ui | grep -q "Terraform Registry"
 
       - name: Upload and test module
         run: |

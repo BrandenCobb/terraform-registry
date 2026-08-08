@@ -2,12 +2,20 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
-RUN go mod download
+# Build registry server
+COPY registry-server/go.mod registry-server/go.sum ./registry-server/
+RUN cd registry-server && go mod download
 
-COPY *.go ./
+COPY registry-server/*.go ./registry-server/
+COPY registry-server/ui/ ./registry-server/ui/
 
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o terraform-registry .
+RUN cd registry-server && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /app/terraform-registry .
+
+# Build CLI tool
+COPY cmd/tfreg/go.mod ./cmd/tfreg/
+COPY cmd/tfreg/*.go ./cmd/tfreg/
+
+RUN cd cmd/tfreg && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /app/tfreg .
 
 FROM alpine:latest
 
@@ -20,11 +28,12 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 
 COPY --from=builder /app/terraform-registry .
+COPY --from=builder /app/tfreg /usr/local/bin/tfreg
 
 # Create default storage directory
 RUN mkdir -p /var/lib/terraform-registry/providers /var/lib/terraform-registry/modules && \
     chmod -R 755 /var/lib/terraform-registry && \
-    chmod +x /app/terraform-registry
+    chmod +x /app/terraform-registry /usr/local/bin/tfreg
 
 EXPOSE 8080
 

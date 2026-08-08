@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terraform Registry</title>
+    <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Terraform Registry</span>
+        </div>
+        <div class="nav-links">
+            <a href="#" data-tab="dashboard" class="active">Dashboard</a>
+            <a href="#" data-tab="providers">Providers</a>
+            <a href="#" data-tab="modules">Modules</a>
+            <a href="#" data-tab="upload">Upload</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        <!-- Dashboard -->
+        <section id="tab-dashboard" class="tab-content active">
+            <h1>Registry Overview</h1>
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-providers">-</div>
+                    <div class="stat-label">Providers</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-provider-versions">-</div>
+                    <div class="stat-label">Provider Versions</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-modules">-</div>
+                    <div class="stat-label">Modules</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-module-versions">-</div>
+                    <div class="stat-label">Module Versions</div>
+                </div>
+            </div>
+            <div class="info-box">
+                <h3>Quick Start</h3>
+                <p>Configure Terraform to use this registry:</p>
+                <pre><code># .terraformrc
+provider_installation {
+  network_mirror {
+    url = "<span id="registry-url"></span>/"
+    include = ["*/*"]
+  }
+}</code></pre>
+            </div>
+        </section>
+
+        <!-- Providers -->
+        <section id="tab-providers" class="tab-content">
+            <h1>Providers</h1>
+            <div id="providers-list" class="artifact-list">
+                <div class="loading">Loading providers...</div>
+            </div>
+        </section>
+
+        <!-- Modules -->
+        <section id="tab-modules" class="tab-content">
+            <h1>Modules</h1>
+            <div id="modules-list" class="artifact-list">
+                <div class="loading">Loading modules...</div>
+            </div>
+        </section>
+
+        <!-- Upload -->
+        <section id="tab-upload" class="tab-content">
+            <h1>Upload Artifact</h1>
+            <div class="upload-form-container">
+                <div class="form-group">
+                    <label>Type</label>
+                    <select id="upload-type" onchange="toggleUploadFields()">
+                        <option value="provider">Provider</option>
+                        <option value="module">Module</option>
+                    </select>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Namespace</label>
+                        <input type="text" id="upload-namespace" placeholder="e.g., hashicorp">
+                    </div>
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input type="text" id="upload-name" placeholder="e.g., aws">
+                    </div>
+                </div>
+
+                <div id="module-provider-field" class="form-group" style="display:none">
+                    <label>Provider</label>
+                    <input type="text" id="upload-provider" placeholder="e.g., aws">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Version</label>
+                        <input type="text" id="upload-version" placeholder="e.g., 1.0.0">
+                    </div>
+                    <div id="platform-fields" class="form-row">
+                        <div class="form-group">
+                            <label>OS</label>
+                            <select id="upload-os">
+                                <option value="linux">linux</option>
+                                <option value="darwin">darwin</option>
+                                <option value="windows">windows</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Arch</label>
+                            <select id="upload-arch">
+                                <option value="amd64">amd64</option>
+                                <option value="arm64">arm64</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>File</label>
+                    <input type="file" id="upload-file">
+                </div>
+
+                <div class="form-group">
+                    <label>API Key (if required)</label>
+                    <input type="password" id="upload-apikey" placeholder="Registry API key">
+                </div>
+
+                <button class="btn btn-primary" onclick="doUpload()">Upload</button>
+                <div id="upload-result" class="result-box" style="display:none"></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Detail modal -->
+    <div id="detail-modal" class="modal" style="display:none">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script src="/ui/app.js"></script>
+</body>
+</html>

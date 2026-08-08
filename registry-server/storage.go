@@ -16,6 +16,7 @@ import (
 type Storage interface {
 	GetObject(key string) ([]byte, error)
 	PutObject(key string, data []byte) error
+	DeleteObject(key string) error
 	ListObjects(prefix string, delimiter string) ([]string, []string, error) // Returns objects and common prefixes
 	GenerateDownloadURL(key string) (string, error)
 	HealthCheck() error
@@ -57,6 +58,14 @@ func (s *S3Storage) PutObject(key string, data []byte) error {
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 		Body:   strings.NewReader(string(data)),
+	})
+	return err
+}
+
+func (s *S3Storage) DeleteObject(key string) error {
+	_, err := s.client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
 	})
 	return err
 }
@@ -136,6 +145,25 @@ func (f *FilesystemStorage) PutObject(key string, data []byte) error {
 	}
 
 	return os.WriteFile(path, data, 0644)
+}
+
+func (f *FilesystemStorage) DeleteObject(key string) error {
+	path := filepath.Join(f.basePath, key)
+	err := os.Remove(path)
+	if err != nil && os.IsNotExist(err) {
+		return nil // already gone
+	}
+	// Clean up empty parent directories up to basePath
+	dir := filepath.Dir(path)
+	for dir != f.basePath {
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil || len(entries) > 0 {
+			break
+		}
+		_ = os.Remove(dir)
+		dir = filepath.Dir(dir)
+	}
+	return err
 }
 
 func (f *FilesystemStorage) ListObjects(prefix string, delimiter string) ([]string, []string, error) {
