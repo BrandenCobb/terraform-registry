@@ -209,7 +209,9 @@ jobs:
           # Wait for registry to be ready
           timeout 30 bash -c 'until curl -f http://localhost:5000/health; do sleep 1; done'
 
-          sleep 2
+          # Make test-data writable from CI runner
+          docker exec terraform-registry chmod -R 777 /var/lib/terraform-registry
+          sleep 1
 
       - name: Test well-known endpoint
         run: |
@@ -257,7 +259,9 @@ jobs:
           ls -laR test-data/
 
           # Wait a moment for filesystem sync
-          sleep 2
+          # Make test-data writable from CI runner
+          docker exec terraform-registry chmod -R 777 /var/lib/terraform-registry
+          sleep 1
 
           # Check logs before test
           echo "=== Registry logs before provider test ==="
