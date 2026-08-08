@@ -16,12 +16,12 @@ import (
 )
 
 var (
-	store        *Store
-	keyStore     *KeyStore
-	auditLog     *AuditLog
-	metrics      *RegistryMetrics
-	webhooks     *WebhookManager
-	logger       *slog.Logger
+	store    *Store
+	keyStore *KeyStore
+	auditLog *AuditLog
+	metrics  *RegistryMetrics
+	webhooks *WebhookManager
+	logger   *slog.Logger
 )
 
 // Terraform Protocol Types
@@ -35,9 +35,9 @@ type ProviderVersionsResponse struct {
 }
 
 type ProviderVersion struct {
-	Version   string             `json:"version"`
-	Protocols []string           `json:"protocols"`
-	Platforms []PlatformMeta     `json:"platforms"`
+	Version   string         `json:"version"`
+	Protocols []string       `json:"protocols"`
+	Platforms []PlatformMeta `json:"platforms"`
 }
 
 type ProviderDownloadResponse struct {

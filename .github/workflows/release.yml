@@ -22,6 +22,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: '1.26'
+          cache-dependency-path: registry-server/go.sum
 
       - name: Get version
         id: version
@@ -47,7 +48,7 @@ jobs:
               go build -v \
               -ldflags="-w -s -X main.version=${{ steps.version.outputs.version }}" \
               -o "../dist/${OUTPUT}" \
-              main.go storage.go
+              .
 
             # Create archive
             cd ../dist

@@ -305,7 +305,7 @@ func TestNetworkMirror(t *testing.T) {
 		t.Fatalf("version: expected 200, got %d", w.Code)
 	}
 	var versionResp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &versionResp)
+	_ = json.Unmarshal(w.Body.Bytes(), &versionResp)
 	archives, ok := versionResp["archives"].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected archives in response")
@@ -355,7 +355,7 @@ func TestAPICRUDProvider(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	var resp ProviderVersionsResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if len(resp.Versions) != 0 {
 		t.Errorf("expected 0 versions after delete, got %d", len(resp.Versions))
 	}
@@ -410,7 +410,7 @@ func TestAPIDeprecateProvider(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	var resp ProviderVersionsResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if len(resp.Versions) != 0 {
 		t.Errorf("deprecated version should be hidden, got %d versions", len(resp.Versions))
 	}

@@ -12,15 +12,15 @@ import (
 // Uses atomic operations for lock-free concurrent access.
 type RegistryMetrics struct {
 	// Counters
-	RequestsTotal      atomic.Int64
-	RequestsOK         atomic.Int64
-	RequestsErr        atomic.Int64
-	ProviderUploads    atomic.Int64
-	ProviderDownloads  atomic.Int64
-	ModuleUploads      atomic.Int64
-	ModuleDownloads    atomic.Int64
-	AuthFailures       atomic.Int64
-	RateLimitHits      atomic.Int64
+	RequestsTotal     atomic.Int64
+	RequestsOK        atomic.Int64
+	RequestsErr       atomic.Int64
+	ProviderUploads   atomic.Int64
+	ProviderDownloads atomic.Int64
+	ModuleUploads     atomic.Int64
+	ModuleDownloads   atomic.Int64
+	AuthFailures      atomic.Int64
+	RateLimitHits     atomic.Int64
 
 	// Gauges (set directly)
 	startTime time.Time
@@ -35,34 +35,34 @@ func NewMetrics() *RegistryMetrics {
 
 // Snapshot returns a point-in-time metrics snapshot.
 type MetricsSnapshot struct {
-	Uptime             string `json:"uptime"`
-	UptimeSeconds      int64  `json:"uptime_seconds"`
-	RequestsTotal      int64  `json:"requests_total"`
-	RequestsOK         int64  `json:"requests_ok"`
-	RequestsErr        int64  `json:"requests_err"`
-	ProviderUploads    int64  `json:"provider_uploads"`
-	ProviderDownloads  int64  `json:"provider_downloads"`
-	ModuleUploads      int64  `json:"module_uploads"`
-	ModuleDownloads    int64  `json:"module_downloads"`
-	AuthFailures       int64  `json:"auth_failures"`
-	RateLimitHits      int64  `json:"rate_limit_hits"`
+	Uptime            string `json:"uptime"`
+	UptimeSeconds     int64  `json:"uptime_seconds"`
+	RequestsTotal     int64  `json:"requests_total"`
+	RequestsOK        int64  `json:"requests_ok"`
+	RequestsErr       int64  `json:"requests_err"`
+	ProviderUploads   int64  `json:"provider_uploads"`
+	ProviderDownloads int64  `json:"provider_downloads"`
+	ModuleUploads     int64  `json:"module_uploads"`
+	ModuleDownloads   int64  `json:"module_downloads"`
+	AuthFailures      int64  `json:"auth_failures"`
+	RateLimitHits     int64  `json:"rate_limit_hits"`
 }
 
 // Snapshot returns current metrics.
 func (m *RegistryMetrics) Snapshot() MetricsSnapshot {
 	uptime := time.Since(m.startTime)
 	return MetricsSnapshot{
-		Uptime:             uptime.Round(time.Second).String(),
-		UptimeSeconds:      int64(uptime.Seconds()),
-		RequestsTotal:      m.RequestsTotal.Load(),
-		RequestsOK:         m.RequestsOK.Load(),
-		RequestsErr:        m.RequestsErr.Load(),
-		ProviderUploads:    m.ProviderUploads.Load(),
-		ProviderDownloads:  m.ProviderDownloads.Load(),
-		ModuleUploads:      m.ModuleUploads.Load(),
-		ModuleDownloads:    m.ModuleDownloads.Load(),
-		AuthFailures:       m.AuthFailures.Load(),
-		RateLimitHits:      m.RateLimitHits.Load(),
+		Uptime:            uptime.Round(time.Second).String(),
+		UptimeSeconds:     int64(uptime.Seconds()),
+		RequestsTotal:     m.RequestsTotal.Load(),
+		RequestsOK:        m.RequestsOK.Load(),
+		RequestsErr:       m.RequestsErr.Load(),
+		ProviderUploads:   m.ProviderUploads.Load(),
+		ProviderDownloads: m.ProviderDownloads.Load(),
+		ModuleUploads:     m.ModuleUploads.Load(),
+		ModuleDownloads:   m.ModuleDownloads.Load(),
+		AuthFailures:      m.AuthFailures.Load(),
+		RateLimitHits:     m.RateLimitHits.Load(),
 	}
 }
 

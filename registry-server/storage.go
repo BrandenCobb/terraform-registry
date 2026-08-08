@@ -256,10 +256,10 @@ type VersionMetadata struct {
 
 // PlatformMeta stores per-platform artifact metadata.
 type PlatformMeta struct {
-	OS       string `json:"os"`
-	Arch     string `json:"arch"`
-	Filename string `json:"filename"`
-	Shasum   string `json:"shasum"`
+	OS        string   `json:"os"`
+	Arch      string   `json:"arch"`
+	Filename  string   `json:"filename"`
+	Shasum    string   `json:"shasum"`
 	Protocols []string `json:"protocols,omitempty"`
 }
 

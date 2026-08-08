@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"log/slog"
 	"mime/multipart"
 	"net/http/httptest"
 	"testing"
@@ -55,9 +54,4 @@ func assertJSONSuccess(t *testing.T, w *httptest.ResponseRecorder, expectSuccess
 	if resp.Success != expectSuccess {
 		t.Errorf("expected success=%v, got %v (message: %s)", expectSuccess, resp.Success, resp.Message)
 	}
-}
-
-// testSlogLogger returns a quiet logger for tests.
-func testSlogLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
 }

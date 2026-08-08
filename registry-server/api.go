@@ -19,15 +19,15 @@ type APIResponse struct {
 }
 
 type ProviderInfo struct {
-	Namespace string         `json:"namespace"`
-	Name      string         `json:"name"`
+	Namespace string            `json:"namespace"`
+	Name      string            `json:"name"`
 	Versions  []ProviderVersion `json:"versions"`
 }
 
 type ModuleInfo struct {
-	Namespace string         `json:"namespace"`
-	Name      string         `json:"name"`
-	Provider  string         `json:"provider"`
+	Namespace string          `json:"namespace"`
+	Name      string          `json:"name"`
+	Provider  string          `json:"provider"`
 	Versions  []ModuleVersion `json:"versions"`
 }
 

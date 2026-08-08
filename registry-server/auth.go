@@ -23,11 +23,11 @@ const (
 
 // APIKey represents a registered API key.
 type APIKey struct {
-	Key         string     `json:"key"`                    // The actual key (hashed below for storage)
-	Hash        string     `json:"hash"`                   // SHA256 hash for comparison
-	Name        string     `json:"name"`                   // Human-readable name
-	Permission  Permission `json:"permission"`             // read, write, or admin
-	Enabled     bool       `json:"enabled"`                // Can be disabled without deletion
+	Key         string     `json:"key"`        // The actual key (hashed below for storage)
+	Hash        string     `json:"hash"`       // SHA256 hash for comparison
+	Name        string     `json:"name"`       // Human-readable name
+	Permission  Permission `json:"permission"` // read, write, or admin
+	Enabled     bool       `json:"enabled"`    // Can be disabled without deletion
 	CreatedAt   time.Time  `json:"created_at"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 	Description string     `json:"description,omitempty"`
@@ -122,9 +122,9 @@ func (ks *KeyStore) HasPermission(key string, required Permission) bool {
 
 // AuthConfig holds auth configuration.
 type AuthConfig struct {
-	Enabled bool
+	Enabled  bool
 	KeyStore *KeyStore
-	Logger  *slog.Logger
+	Logger   *slog.Logger
 }
 
 // authMiddleware creates middleware that enforces RBAC on management endpoints.

@@ -7,22 +7,21 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
 // WebhookConfig represents a configured webhook endpoint.
 type WebhookConfig struct {
-	URL     string   `json:"url"`               // Webhook endpoint URL
-	Secret  string   `json:"secret,omitempty"`   // HMAC secret for signing payloads
-	Events  []string `json:"events"`             // Events to subscribe to: publish, delete, deprecate
+	URL     string   `json:"url"`              // Webhook endpoint URL
+	Secret  string   `json:"secret,omitempty"` // HMAC secret for signing payloads
+	Events  []string `json:"events"`           // Events to subscribe to: publish, delete, deprecate
 	Enabled bool     `json:"enabled"`
 }
 
 // WebhookPayload is the JSON body sent to webhook endpoints.
 type WebhookPayload struct {
-	Event     string      `json:"event"`      // publish, delete, deprecate
-	Kind      string      `json:"kind"`       // provider, module
+	Event     string      `json:"event"` // publish, delete, deprecate
+	Kind      string      `json:"kind"`  // provider, module
 	Namespace string      `json:"namespace"`
 	Name      string      `json:"name"`
 	Provider  string      `json:"provider,omitempty"`
@@ -145,48 +144,4 @@ func (wm *WebhookManager) Reload(path string) {
 // loadWebhookConfigPath returns the webhook config path from environment.
 func loadWebhookConfigPath() string {
 	return os.Getenv("WEBHOOK_CONFIG")
-}
-
-// shouldNotify checks if the webhook config has any matching subscribers.
-func (wm *WebhookManager) shouldNotify(event string) bool {
-	for _, wh := range wm.webhooks {
-		if !wh.Enabled {
-			continue
-		}
-		for _, e := range wh.Events {
-			if e == event || e == "*" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// webhookConfigExample returns an example webhook configuration.
-func webhookConfigExample() string {
-	return `{
-  "webhooks": [
-    {
-      "url": "https://hooks.example.com/registry",
-      "secret": "optional-hmac-secret",
-      "events": ["publish", "delete", "deprecate"],
-      "enabled": true
-    },
-    {
-      "url": "http://slack-bot:9090/notify",
-      "events": ["publish"],
-      "enabled": false
-    }
-  ]
-}`
-}
-
-// Matches checks if a string matches a pattern (supports * wildcard).
-func webhookEventMatch(events []string, event string) bool {
-	for _, e := range events {
-		if e == "*" || strings.EqualFold(e, event) {
-			return true
-		}
-	}
-	return false
 }

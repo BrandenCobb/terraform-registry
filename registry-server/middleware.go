@@ -106,9 +106,9 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 // AuditLog writes structured audit entries for all management operations.
 type AuditLog struct {
-	logger   *slog.Logger
-	file     *os.File
-	mu       sync.Mutex
+	logger *slog.Logger
+	file   *os.File
+	mu     sync.Mutex
 }
 
 // NewAuditLog creates an audit logger that writes to the given file path.
