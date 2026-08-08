@@ -83,12 +83,14 @@ jobs:
               .
 
             # Archive
+            cd ../dist
             if [ "$GOOS" = "windows" ]; then
-              zip "../dist/tfreg-${GOOS}-${GOARCH}.zip" "../dist/${OUTPUT}"
+              zip "tfreg-${GOOS}-${GOARCH}.zip" "${OUTPUT}"
             else
-              tar czf "../dist/tfreg-${GOOS}-${GOARCH}.tar.gz" -C ../dist "${OUTPUT}"
-              rm "../dist/${OUTPUT}"
+              tar czf "tfreg-${GOOS}-${GOARCH}.tar.gz" "${OUTPUT}"
             fi
+            rm "${OUTPUT}"
+            cd -
           done
 
       - name: Generate checksums
