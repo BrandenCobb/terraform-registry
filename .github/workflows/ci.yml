@@ -204,13 +204,12 @@ jobs:
             -p 5000:8080 \
             -v $(pwd)/test-data:/var/lib/terraform-registry \
             -e BASE_URL=http://localhost:5000 \
+            -e API_KEYS_FILE=/tmp/keys.json \
             terraform-registry:test
 
           # Wait for registry to be ready
           timeout 30 bash -c 'until curl -f http://localhost:5000/health; do sleep 1; done'
 
-          # Make test-data writable from CI runner
-          docker exec terraform-registry chmod -R 777 /var/lib/terraform-registry
           sleep 1
 
       - name: Test well-known endpoint
@@ -259,8 +258,6 @@ jobs:
           ls -laR test-data/
 
           # Wait a moment for filesystem sync
-          # Make test-data writable from CI runner
-          docker exec terraform-registry chmod -R 777 /var/lib/terraform-registry
           sleep 1
 
           # Check logs before test
