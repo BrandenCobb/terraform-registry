@@ -1,161 +1,166 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"sync"
 )
 
-// Storage interface abstracts S3 and filesystem storage
-type Storage interface {
-	GetObject(key string) ([]byte, error)
-	PutObject(key string, data []byte) error
-	DeleteObject(key string) error
-	ListObjects(prefix string, delimiter string) ([]string, []string, error) // Returns objects and common prefixes
-	GenerateDownloadURL(key string) (string, error)
-	HealthCheck() error
-}
-
-// S3Storage implements Storage using AWS S3
-type S3Storage struct {
-	client     *s3.Client
-	bucketName string
-}
-
-func NewS3Storage(client *s3.Client, bucket string) *S3Storage {
-	return &S3Storage{
-		client:     client,
-		bucketName: bucket,
-	}
-}
-
-func (s *S3Storage) GetObject(key string) ([]byte, error) {
-	result, err := s.client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = result.Body.Close() }()
-
-	data, err := io.ReadAll(result.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
-}
-
-func (s *S3Storage) PutObject(key string, data []byte) error {
-	_, err := s.client.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-		Body:   strings.NewReader(string(data)),
-	})
-	return err
-}
-
-func (s *S3Storage) DeleteObject(key string) error {
-	_, err := s.client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-	})
-	return err
-}
-
-func (s *S3Storage) ListObjects(prefix string, delimiter string) ([]string, []string, error) {
-	result, err := s.client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
-		Bucket:    aws.String(s.bucketName),
-		Prefix:    aws.String(prefix),
-		Delimiter: aws.String(delimiter),
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var objects []string
-	for _, obj := range result.Contents {
-		objects = append(objects, *obj.Key)
-	}
-
-	var prefixes []string
-	for _, prefix := range result.CommonPrefixes {
-		prefixes = append(prefixes, *prefix.Prefix)
-	}
-
-	return objects, prefixes, nil
-}
-
-func (s *S3Storage) GenerateDownloadURL(key string) (string, error) {
-	presignClient := s3.NewPresignClient(s.client)
-	presignResult, err := presignClient.PresignGetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return "", err
-	}
-	return presignResult.URL, nil
-}
-
-func (s *S3Storage) HealthCheck() error {
-	_, err := s.client.HeadBucket(context.TODO(), &s3.HeadBucketInput{
-		Bucket: aws.String(s.bucketName),
-	})
-	return err
-}
-
-// FilesystemStorage implements Storage using local filesystem
-type FilesystemStorage struct {
+// Store implements filesystem-backed storage for the Terraform registry.
+// All writes are atomic (write-to-temp + rename). Reads use standard file I/O.
+// A per-path mutex map prevents concurrent writes to the same artifact.
+type Store struct {
 	basePath string
-	baseURL  string // Base URL for serving files
+	baseURL  string
+	mu       sync.Mutex
+	locks    map[string]*sync.Mutex
+	logger   *slog.Logger
 }
 
-func NewFilesystemStorage(basePath, baseURL string) (*FilesystemStorage, error) {
-	// Ensure base path exists
-	if err := os.MkdirAll(basePath, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create base path: %w", err)
+// NewStore creates a new filesystem store. basePath is the root directory
+// for all registry data. baseURL is the public URL used for download links.
+func NewStore(basePath, baseURL string, logger *slog.Logger) (*Store, error) {
+	dirs := []string{
+		filepath.Join(basePath, "providers"),
+		filepath.Join(basePath, "modules"),
+		filepath.Join(basePath, "keys"),
+		filepath.Join(basePath, "tmp"),
 	}
-
-	return &FilesystemStorage{
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			return nil, fmt.Errorf("create directory %s: %w", d, err)
+		}
+	}
+	return &Store{
 		basePath: basePath,
-		baseURL:  baseURL,
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		locks:    make(map[string]*sync.Mutex),
+		logger:   logger,
 	}, nil
 }
 
-func (f *FilesystemStorage) GetObject(key string) ([]byte, error) {
-	path := filepath.Join(f.basePath, key)
-	return os.ReadFile(path)
+// getLock returns a per-key mutex for serializing concurrent writes.
+func (s *Store) getLock(key string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.locks[key] == nil {
+		s.locks[key] = &sync.Mutex{}
+	}
+	return s.locks[key]
 }
 
-func (f *FilesystemStorage) PutObject(key string, data []byte) error {
-	path := filepath.Join(f.basePath, key)
+// --- Core CRUD ---
 
-	// Create parent directories
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+// Get reads a file from storage.
+func (s *Store) Get(key string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(s.basePath, key))
+}
+
+// Put writes data atomically (write-to-temp, sync, rename).
+func (s *Store) Put(key string, data []byte) error {
+	lk := s.getLock(key)
+	lk.Lock()
+	defer lk.Unlock()
+
+	path := filepath.Join(s.basePath, key)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+
+	// Write to temp file in same directory (same filesystem for atomic rename)
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".tmp-%s", filepath.Base(path)))
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open temp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+// PutStream writes data from a reader atomically, with a max size limit.
+func (s *Store) PutStream(key string, r io.Reader, maxSize int64) (int64, error) {
+	lk := s.getLock(key)
+	lk.Lock()
+	defer lk.Unlock()
+
+	path := filepath.Join(s.basePath, key)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return 0, fmt.Errorf("mkdir: %w", err)
+	}
+
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".tmp-%s", filepath.Base(path)))
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return 0, fmt.Errorf("open temp: %w", err)
+	}
+
+	limited := io.LimitedReader{R: r, N: maxSize + 1}
+	n, err := io.Copy(f, &limited)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("copy: %w", err)
+	}
+	if n > maxSize {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("upload exceeds maximum size of %d bytes", maxSize)
+	}
+
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("close: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("rename: %w", err)
+	}
+	return n, nil
+}
+
+// Delete removes a file. Cleans up empty parent directories up to basePath.
+func (s *Store) Delete(key string) error {
+	lk := s.getLock(key)
+	lk.Lock()
+	defer lk.Unlock()
+
+	path := filepath.Join(s.basePath, key)
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
-}
-
-func (f *FilesystemStorage) DeleteObject(key string) error {
-	path := filepath.Join(f.basePath, key)
-	err := os.Remove(path)
-	if err != nil && os.IsNotExist(err) {
-		return nil // already gone
-	}
-	// Clean up empty parent directories up to basePath
+	// Clean empty parent dirs
 	dir := filepath.Dir(path)
-	for dir != f.basePath {
+	for dir != s.basePath {
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil || len(entries) > 0 {
 			break
@@ -163,76 +168,331 @@ func (f *FilesystemStorage) DeleteObject(key string) error {
 		_ = os.Remove(dir)
 		dir = filepath.Dir(dir)
 	}
-	return err
+	return nil
 }
 
-func (f *FilesystemStorage) ListObjects(prefix string, delimiter string) ([]string, []string, error) {
-	searchPath := filepath.Join(f.basePath, prefix)
+// List returns objects and subdirectories under a prefix.
+// If delimiter is non-empty, returns immediate subdirectories as prefixes.
+// If delimiter is empty, returns all files recursively.
+func (s *Store) List(prefix, delimiter string) (objects []string, prefixes []string, err error) {
+	searchPath := filepath.Join(s.basePath, prefix)
 
-	var objects []string
-	var prefixes []string
-
-	// If delimiter is set, only list immediate children
 	if delimiter != "" {
 		entries, err := os.ReadDir(searchPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return objects, prefixes, nil
+				return nil, nil, nil
 			}
 			return nil, nil, err
 		}
-
-		for _, entry := range entries {
-			relPath := filepath.Join(prefix, entry.Name())
-			if entry.IsDir() {
-				prefixes = append(prefixes, relPath+"/")
+		for _, e := range entries {
+			rel := filepath.ToSlash(filepath.Join(prefix, e.Name()))
+			if e.IsDir() {
+				prefixes = append(prefixes, rel+"/")
 			} else {
-				objects = append(objects, relPath)
+				objects = append(objects, rel)
 			}
 		}
-
 		return objects, prefixes, nil
 	}
 
-	// No delimiter - recursive listing
-	err := filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() {
-			relPath, _ := filepath.Rel(f.basePath, path)
-			objects = append(objects, filepath.ToSlash(relPath))
+			rel, _ := filepath.Rel(s.basePath, path)
+			objects = append(objects, filepath.ToSlash(rel))
 		}
 		return nil
 	})
-
 	if err != nil && !os.IsNotExist(err) {
 		return nil, nil, err
 	}
-
 	return objects, prefixes, nil
 }
 
-func (f *FilesystemStorage) GenerateDownloadURL(key string) (string, error) {
-	// For filesystem storage, return a direct URL
-	return fmt.Sprintf("%s/download/%s", f.baseURL, key), nil
+// Exists checks if a key exists in storage.
+func (s *Store) Exists(key string) bool {
+	_, err := os.Stat(filepath.Join(s.basePath, key))
+	return err == nil
 }
 
-func (f *FilesystemStorage) HealthCheck() error {
-	// Check if base path is accessible
-	_, err := os.Stat(f.basePath)
+// DownloadURL returns the public download URL for a key.
+func (s *Store) DownloadURL(key string) string {
+	return fmt.Sprintf("%s/download/%s", s.baseURL, key)
+}
+
+// HealthCheck verifies storage is accessible.
+func (s *Store) HealthCheck() error {
+	_, err := os.Stat(s.basePath)
 	return err
 }
 
-// ServeFile serves a file from filesystem storage (for direct downloads)
-func (f *FilesystemStorage) ServeFile(w io.Writer, key string) error {
-	path := filepath.Join(f.basePath, key)
-	file, err := os.Open(path)
+// BasePath returns the storage root.
+func (s *Store) BasePath() string {
+	return s.basePath
+}
+
+// --- Index Management ---
+
+// Index represents a version index file.
+type Index struct {
+	Versions []string          `json:"versions"`
+	Metadata map[string]string `json:"metadata,omitempty"` // version -> description
+}
+
+// VersionMetadata stores per-version metadata.
+type VersionMetadata struct {
+	Version     string            `json:"version"`
+	Description string            `json:"description,omitempty"`
+	Deprecated  bool              `json:"deprecated,omitempty"`
+	Deprecation string            `json:"deprecation_message,omitempty"`
+	GPGKeyID    string            `json:"gpg_key_id,omitempty"`
+	GPGKeyArmor string            `json:"gpg_key_armor,omitempty"`
+	Platforms   []PlatformMeta    `json:"platforms,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+// PlatformMeta stores per-platform artifact metadata.
+type PlatformMeta struct {
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	Filename string `json:"filename"`
+	Shasum   string `json:"shasum"`
+	Protocols []string `json:"protocols,omitempty"`
+}
+
+// GetProviderIndex reads the provider version index.
+func (s *Store) GetProviderIndex(namespace, name string) (*Index, error) {
+	return s.getIndex(fmt.Sprintf("providers/%s/%s/index.json", namespace, name))
+}
+
+// GetModuleIndex reads the module version index.
+func (s *Store) GetModuleIndex(namespace, name, provider string) (*Index, error) {
+	return s.getIndex(fmt.Sprintf("modules/%s/%s/%s/index.json", namespace, name, provider))
+}
+
+// AddProviderVersion adds a version to the provider index.
+func (s *Store) AddProviderVersion(namespace, name, version string) error {
+	key := fmt.Sprintf("providers/%s/%s/index.json", namespace, name)
+	return s.addVersionToIndex(key, version)
+}
+
+// AddModuleVersion adds a version to the module index.
+func (s *Store) AddModuleVersion(namespace, name, provider, version string) error {
+	key := fmt.Sprintf("modules/%s/%s/%s/index.json", namespace, name, provider)
+	return s.addVersionToIndex(key, version)
+}
+
+// RemoveProviderVersion removes a version from the provider index.
+func (s *Store) RemoveProviderVersion(namespace, name, version string) error {
+	key := fmt.Sprintf("providers/%s/%s/index.json", namespace, name)
+	return s.removeVersionFromIndex(key, version)
+}
+
+// RemoveModuleVersion removes a version from the module index.
+func (s *Store) RemoveModuleVersion(namespace, name, provider, version string) error {
+	key := fmt.Sprintf("modules/%s/%s/%s/index.json", namespace, name, provider)
+	return s.removeVersionFromIndex(key, version)
+}
+
+// DeprecateProviderVersion marks a provider version as deprecated.
+func (s *Store) DeprecateProviderVersion(namespace, name, version, message string) error {
+	key := fmt.Sprintf("providers/%s/%s/%s/metadata.json", namespace, name, version)
+	return s.setDeprecation(key, version, message)
+}
+
+// DeprecateModuleVersion marks a module version as deprecated.
+func (s *Store) DeprecateModuleVersion(namespace, name, provider, version, message string) error {
+	key := fmt.Sprintf("modules/%s/%s/%s/%s/metadata.json", namespace, name, provider, version)
+	return s.setDeprecation(key, version, message)
+}
+
+// ScanProviderVersions scans the filesystem for provider versions.
+func (s *Store) ScanProviderVersions(namespace, name string) ([]string, error) {
+	prefix := fmt.Sprintf("providers/%s/%s/", namespace, name)
+	_, prefixes, err := s.List(prefix, "/")
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool)
+	var versions []string
+	for _, p := range prefixes {
+		parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
+		if len(parts) >= 4 {
+			v := parts[3]
+			if !seen[v] && v != "index.json" {
+				seen[v] = true
+				versions = append(versions, v)
+			}
+		}
+	}
+	sort.Strings(versions)
+	return versions, nil
+}
+
+// ScanModuleVersions scans the filesystem for module versions.
+func (s *Store) ScanModuleVersions(namespace, name, provider string) ([]string, error) {
+	prefix := fmt.Sprintf("modules/%s/%s/%s/", namespace, name, provider)
+	_, prefixes, err := s.List(prefix, "/")
+	if err != nil {
+		return nil, err
+	}
+
+	var versions []string
+	for _, p := range prefixes {
+		parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
+		if len(parts) >= 5 {
+			versions = append(versions, parts[4])
+		}
+	}
+	sort.Strings(versions)
+	return versions, nil
+}
+
+// GetProviderPlatforms returns available platforms for a provider version.
+func (s *Store) GetProviderPlatforms(namespace, name, version string) ([]PlatformMeta, error) {
+	prefix := fmt.Sprintf("providers/%s/%s/%s/", namespace, name, version)
+	objects, _, err := s.List(prefix, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var platforms []PlatformMeta
+	seen := make(map[string]bool)
+	for _, obj := range objects {
+		if strings.HasSuffix(obj, ".json") && !strings.HasSuffix(obj, "index.json") && !strings.HasSuffix(obj, "metadata.json") {
+			data, err := s.Get(obj)
+			if err != nil {
+				continue
+			}
+			var pm PlatformMeta
+			if err := json.Unmarshal(data, &pm); err != nil {
+				continue
+			}
+			key := pm.OS + "/" + pm.Arch
+			if !seen[key] {
+				seen[key] = true
+				platforms = append(platforms, pm)
+			}
+		}
+	}
+	return platforms, nil
+}
+
+// GetVersionMetadata reads per-version metadata.
+func (s *Store) GetVersionMetadata(key string) (*VersionMetadata, error) {
+	data, err := s.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	var meta VersionMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+// GarbageCollect removes temp files older than the given path's mtime.
+func (s *Store) GarbageCollect() (int, error) {
+	tmpDir := filepath.Join(s.basePath, "tmp")
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			// Remove temp files older than 1 hour
+			if info.ModTime().Add(1 * 60 * 60 * 1000000000).Before(info.ModTime()) {
+				continue
+			}
+			_ = os.Remove(filepath.Join(tmpDir, e.Name()))
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// --- Internal helpers ---
+
+func (s *Store) getIndex(key string) (*Index, error) {
+	data, err := s.Get(key)
+	if err != nil {
+		return &Index{Versions: []string{}}, nil // empty index
+	}
+	var idx Index
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return nil, fmt.Errorf("corrupt index %s: %w", key, err)
+	}
+	if idx.Versions == nil {
+		idx.Versions = []string{}
+	}
+	return &idx, nil
+}
+
+func (s *Store) addVersionToIndex(key, version string) error {
+	idx, err := s.getIndex(key)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = file.Close() }()
+	for _, v := range idx.Versions {
+		if v == version {
+			return nil // already present
+		}
+	}
+	idx.Versions = append(idx.Versions, version)
+	sort.Strings(idx.Versions)
 
-	_, err = io.Copy(w, file)
-	return err
+	data, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return err
+	}
+	return s.Put(key, data)
 }
+
+func (s *Store) removeVersionFromIndex(key, version string) error {
+	idx, err := s.getIndex(key)
+	if err != nil {
+		return err
+	}
+	var filtered []string
+	for _, v := range idx.Versions {
+		if v != version {
+			filtered = append(filtered, v)
+		}
+	}
+	idx.Versions = filtered
+
+	data, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return err
+	}
+	return s.Put(key, data)
+}
+
+func (s *Store) setDeprecation(key, version, message string) error {
+	var meta VersionMetadata
+	data, err := s.Get(key)
+	if err == nil {
+		_ = json.Unmarshal(data, &meta)
+	}
+	meta.Version = version
+	meta.Deprecated = true
+	meta.Deprecation = message
+
+	newData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return s.Put(key, newData)
+}
+
+// Unused logger reference to avoid compile error
+var _ = (*slog.Logger)(nil)

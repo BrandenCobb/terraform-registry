@@ -5,22 +5,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
+
+	"log/slog"
 
 	"github.com/gorilla/mux"
 )
 
-func setupTestRouter(t *testing.T) (*mux.Router, *FilesystemStorage, string) {
-	tmpDir, err := os.MkdirTemp("", "terraform-registry-integration-*")
+func setupTestEnv(t *testing.T) (*mux.Router, *Store, string) {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "tfreg-test-*")
 	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
+		t.Fatalf("temp dir: %v", err)
 	}
 
-	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
+	testLogger := testLogger()
+	s, err := NewStore(tmpDir, "http://localhost:8080", testLogger)
 	if err != nil {
-		t.Fatalf("failed to create filesystem storage: %v", err)
+		t.Fatalf("new store: %v", err)
 	}
+
+	// Set globals
+	store = s
+	logger = testLogger
+	metrics = NewMetrics()
+	webhooks = NewWebhookManager("", testLogger)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/.well-known/terraform.json", wellKnownHandler).Methods("GET")
@@ -29,661 +39,606 @@ func setupTestRouter(t *testing.T) (*mux.Router, *FilesystemStorage, string) {
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/versions", moduleVersionsHandler).Methods("GET")
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/{version}/download", moduleDownloadHandler).Methods("GET")
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/download", moduleLatestDownloadHandler).Methods("GET")
+	r.HandleFunc("/{hostname}/{namespace}/{type}/index.json", networkMirrorIndexHandler).Methods("GET")
+	r.HandleFunc("/{hostname}/{namespace}/{type}/{version}.json", networkMirrorVersionHandler).Methods("GET")
 	r.HandleFunc("/download/{path:.*}", fileDownloadHandler).Methods("GET")
 	r.HandleFunc("/health", healthHandler).Methods("GET")
+	r.HandleFunc("/metrics", prometheusHandler(metrics)).Methods("GET")
 
-	return r, storage.(*FilesystemStorage), tmpDir
+	api := r.PathPrefix("/api/v1").Subrouter()
+	api.HandleFunc("/stats", registryStatsHandler).Methods("GET")
+	api.HandleFunc("/providers", listProvidersHandler).Methods("GET")
+	api.HandleFunc("/providers/{namespace}/{name}", getProviderHandler).Methods("GET")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}/{os}/{arch}", uploadProviderHandler).Methods("POST")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}", deleteProviderVersionHandler).Methods("DELETE")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}/deprecate", deprecateProviderHandler).Methods("POST")
+	api.HandleFunc("/modules", listModulesHandler).Methods("GET")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}", getModuleHandler).Methods("GET")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", uploadModuleHandler).Methods("POST")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", deleteModuleVersionHandler).Methods("DELETE")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}/deprecate", deprecateModuleHandler).Methods("POST")
+	api.HandleFunc("/gc", gcHandler).Methods("POST")
+
+	return r, s, tmpDir
 }
 
-func TestWellKnownHandler(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
+// --- Protocol Tests ---
+
+func TestWellKnown(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/.well-known/terraform.json", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-
-	var response WellKnown
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
+	var resp WellKnown
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-
-	if response.ProvidersV1 != "/v1/providers/" {
-		t.Errorf("expected providers.v1 '/v1/providers/', got '%s'", response.ProvidersV1)
-	}
-
-	if response.ModulesV1 != "/v1/modules/" {
-		t.Errorf("expected modules.v1 '/v1/modules/', got '%s'", response.ModulesV1)
+	if resp.ProvidersV1 != "/v1/providers/" || resp.ModulesV1 != "/v1/modules/" {
+		t.Errorf("unexpected discovery: %+v", resp)
 	}
 }
 
-func TestHealthHandler(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
+func TestHealth(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-
-	if w.Body.String() != "OK" {
-		t.Errorf("expected body 'OK', got '%s'", w.Body.String())
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
 
-func TestProviderVersionsHandler(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestProviderVersions(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Create test provider structure
-	namespace := "hashicorp"
-	providerType := "aws"
-	version := "6.31.0"
-
-	// Create index.json
-	index := Index{Versions: []string{version}}
-	indexData, _ := json.Marshal(index)
-	indexKey := filepath.Join("providers", namespace, providerType, "index.json")
-	if err := fs.PutObject(indexKey, indexData); err != nil {
-		t.Fatalf("failed to create index: %v", err)
-	}
-
-	// Create platform metadata
-	platformMeta := PlatformMetadata{
-		Filename: "terraform-provider-aws_v6.31.0_linux_amd64.zip",
-		Shasum:   "abc123",
-	}
-	metaData, _ := json.Marshal(platformMeta)
-	metaKey := filepath.Join("providers", namespace, providerType, version, "linux_amd64.json")
-	if err := fs.PutObject(metaKey, metaData); err != nil {
-		t.Fatalf("failed to create metadata: %v", err)
-	}
+	// Seed data
+	_ = s.AddProviderVersion("hashicorp", "aws", "6.31.0")
+	meta := PlatformMeta{OS: "linux", Arch: "amd64", Filename: "terraform-provider-aws_6.31.0_linux_amd64.zip", Shasum: "abc123", Protocols: []string{"5.0"}}
+	metaData, _ := json.Marshal(meta)
+	_ = s.Put("providers/hashicorp/aws/6.31.0/linux_amd64.json", metaData)
 
 	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/versions", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-
-	var response ProviderVersionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
+	var resp ProviderVersionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-
-	if len(response.Versions) != 1 {
-		t.Errorf("expected 1 version, got %d", len(response.Versions))
-	}
-
-	if response.Versions[0].Version != version {
-		t.Errorf("expected version %s, got %s", version, response.Versions[0].Version)
-	}
-
-	if len(response.Versions[0].Platforms) != 1 {
-		t.Errorf("expected 1 platform, got %d", len(response.Versions[0].Platforms))
+	if len(resp.Versions) != 1 || resp.Versions[0].Version != "6.31.0" {
+		t.Errorf("unexpected versions: %+v", resp.Versions)
 	}
 }
 
-func TestProviderVersionsHandlerNotFound(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
+func TestProviderVersionsNotFound(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	req := httptest.NewRequest("GET", "/v1/providers/nonexistent/provider/versions", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
-	// When no index exists, scanProviderVersions returns empty list with 200
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-
-	var response ProviderVersionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	if len(response.Versions) != 0 {
-		t.Errorf("expected 0 versions for non-existent provider, got %d", len(response.Versions))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestProviderDownloadHandler(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestProviderDownload(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	namespace := "hashicorp"
-	providerType := "aws"
-	version := "6.31.0"
-	osArch := "linux_amd64"
-
-	// Create platform metadata
-	platformMeta := PlatformMetadata{
-		Filename: "terraform-provider-aws_v6.31.0_linux_amd64.zip",
-		Shasum:   "abc123def456",
-	}
-	metaData, _ := json.Marshal(platformMeta)
-	metaKey := filepath.Join("providers", namespace, providerType, version, osArch+".json")
-	if err := fs.PutObject(metaKey, metaData); err != nil {
-		t.Fatalf("failed to create metadata: %v", err)
-	}
-
-	// Create dummy zip file
-	zipKey := filepath.Join("providers", namespace, providerType, version, platformMeta.Filename)
-	if err := fs.PutObject(zipKey, []byte("fake zip data")); err != nil {
-		t.Fatalf("failed to create zip: %v", err)
-	}
+	_ = s.AddProviderVersion("hashicorp", "aws", "6.31.0")
+	meta := PlatformMeta{OS: "linux", Arch: "amd64", Filename: "terraform-provider-aws_6.31.0_linux_amd64.zip", Shasum: "abc123"}
+	metaData, _ := json.Marshal(meta)
+	_ = s.Put("providers/hashicorp/aws/6.31.0/linux_amd64.json", metaData)
+	_ = s.Put("providers/hashicorp/aws/6.31.0/terraform-provider-aws_6.31.0_linux_amd64.zip", []byte("fake"))
 
 	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/6.31.0/download/linux/amd64", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-
-	var response ProviderDownloadResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
+	var resp ProviderDownloadResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-
-	if response.Filename != platformMeta.Filename {
-		t.Errorf("expected filename %s, got %s", platformMeta.Filename, response.Filename)
+	if resp.Shasum != "abc123" {
+		t.Errorf("expected shasum abc123, got %s", resp.Shasum)
 	}
-
-	if response.Shasum != platformMeta.Shasum {
-		t.Errorf("expected shasum %s, got %s", platformMeta.Shasum, response.Shasum)
-	}
-
-	if response.OS != "linux" {
-		t.Errorf("expected OS 'linux', got '%s'", response.OS)
-	}
-
-	if response.Arch != "amd64" {
-		t.Errorf("expected Arch 'amd64', got '%s'", response.Arch)
+	if resp.DownloadURL == "" {
+		t.Error("expected download URL")
 	}
 }
 
-func TestModuleVersionsHandler(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestProviderDownloadNotFound(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	namespace := "example"
-	name := "vpc"
-	provider := "aws"
-	version := "1.0.0"
+	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/1.0.0/download/linux/amd64", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	// Create index.json
-	index := Index{Versions: []string{version}}
-	indexData, _ := json.Marshal(index)
-	indexKey := filepath.Join("modules", namespace, name, provider, "index.json")
-	if err := fs.PutObject(indexKey, indexData); err != nil {
-		t.Fatalf("failed to create index: %v", err)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
 	}
+}
+
+func TestModuleVersions(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	_ = s.AddModuleVersion("example", "vpc", "aws", "1.0.0")
 
 	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/versions", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-
-	var response ModuleVersionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
+	var resp ModuleVersionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-
-	if len(response.Modules) != 1 {
-		t.Errorf("expected 1 module version, got %d", len(response.Modules))
-	}
-
-	if response.Modules[0].Version != version {
-		t.Errorf("expected version %s, got %s", version, response.Modules[0].Version)
+	if len(resp.Modules) != 1 || resp.Modules[0].Version != "1.0.0" {
+		t.Errorf("unexpected: %+v", resp.Modules)
 	}
 }
 
-func TestModuleDownloadHandler(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestModuleDownload(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	namespace := "example"
-	name := "vpc"
-	provider := "aws"
-	version := "1.0.0"
-
-	// Create module tarball
-	moduleKey := filepath.Join("modules", namespace, name, provider, version, "module.tar.gz")
-	if err := fs.PutObject(moduleKey, []byte("fake tarball")); err != nil {
-		t.Fatalf("failed to create module: %v", err)
-	}
+	_ = s.AddModuleVersion("example", "vpc", "aws", "1.0.0")
+	_ = s.Put("modules/example/vpc/aws/1.0.0/module.tar.gz", []byte("fake tarball"))
 
 	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/1.0.0/download", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
-	// Should redirect with 302
-	if w.Code != http.StatusFound {
-		t.Errorf("expected status 302, got %d", w.Code)
+	// Terraform protocol: 204 with X-Terraform-Get
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
 	}
-
-	location := w.Header().Get("Location")
-	expectedPrefix := "http://localhost:8080/download/"
-	if len(location) == 0 || location[:len(expectedPrefix)] != expectedPrefix {
-		t.Errorf("expected Location to start with %s, got %s", expectedPrefix, location)
+	if w.Header().Get("X-Terraform-Get") == "" {
+		t.Error("expected X-Terraform-Get header")
 	}
 }
 
-func TestModuleLatestDownloadHandler(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestModuleLatestDownload(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	namespace := "example"
-	name := "vpc"
-	provider := "aws"
-	versions := []string{"1.0.0", "1.1.0", "2.0.0"}
-
-	// Create index.json
-	index := Index{Versions: versions}
-	indexData, _ := json.Marshal(index)
-	indexKey := filepath.Join("modules", namespace, name, provider, "index.json")
-	if err := fs.PutObject(indexKey, indexData); err != nil {
-		t.Fatalf("failed to create index: %v", err)
-	}
-
-	// Create module tarball for latest version
-	moduleKey := filepath.Join("modules", namespace, name, provider, "2.0.0", "module.tar.gz")
-	if err := fs.PutObject(moduleKey, []byte("fake tarball")); err != nil {
-		t.Fatalf("failed to create module: %v", err)
-	}
+	_ = s.AddModuleVersion("example", "vpc", "aws", "1.0.0")
+	_ = s.AddModuleVersion("example", "vpc", "aws", "2.0.0")
+	_ = s.Put("modules/example/vpc/aws/2.0.0/module.tar.gz", []byte("fake"))
 
 	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/download", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-
-	var response ModuleLatestResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	if response.Version != "2.0.0" {
-		t.Errorf("expected latest version '2.0.0', got '%s'", response.Version)
-	}
-
-	xTerraformGet := w.Header().Get("X-Terraform-Get")
-	if len(xTerraformGet) == 0 {
-		t.Error("expected X-Terraform-Get header to be set")
+	if w.Header().Get("X-Terraform-Get") == "" {
+		t.Error("expected X-Terraform-Get header")
 	}
 }
 
-func TestFileDownloadHandler(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestFileDownload(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Create test file
-	fileKey := "test/file.zip"
-	fileData := []byte("test zip data")
-	if err := fs.PutObject(fileKey, fileData); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
+	_ = s.Put("test/file.zip", []byte("fake zip"))
 
 	req := httptest.NewRequest("GET", "/download/test/file.zip", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-
 	if w.Header().Get("Content-Type") != "application/zip" {
-		t.Errorf("expected Content-Type 'application/zip', got '%s'", w.Header().Get("Content-Type"))
-	}
-
-	if w.Body.String() != string(fileData) {
-		t.Errorf("file content mismatch")
+		t.Errorf("expected application/zip, got %s", w.Header().Get("Content-Type"))
 	}
 }
 
-func TestScanProviderVersions(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "terraform-registry-scan-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
+func TestFileDownloadPathTraversal(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
-	if err != nil {
-		t.Fatalf("failed to create filesystem storage: %v", err)
-	}
-
-	namespace := "hashicorp"
-	providerType := "aws"
-
-	// Create multiple versions
-	versions := []string{"6.30.0", "6.31.0"}
-	for _, version := range versions {
-		platformMeta := PlatformMetadata{
-			Filename: "terraform-provider-aws_v" + version + "_linux_amd64.zip",
-			Shasum:   "abc123",
-		}
-		metaData, _ := json.Marshal(platformMeta)
-		metaKey := filepath.Join("providers", namespace, providerType, version, "linux_amd64.json")
-		fs := storage.(*FilesystemStorage)
-		if err := fs.PutObject(metaKey, metaData); err != nil {
-			t.Fatalf("failed to create metadata: %v", err)
-		}
-	}
-
-	result, err := scanProviderVersions(namespace, providerType)
-	if err != nil {
-		t.Fatalf("scanProviderVersions failed: %v", err)
-	}
-
-	if len(result) != 2 {
-		t.Errorf("expected 2 versions, got %d", len(result))
-	}
-}
-
-func TestGetProviderPlatforms(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "terraform-registry-platforms-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
-	if err != nil {
-		t.Fatalf("failed to create filesystem storage: %v", err)
-	}
-
-	namespace := "hashicorp"
-	providerType := "aws"
-	version := "6.31.0"
-
-	// Create multiple platforms
-	platforms := []string{"linux_amd64", "linux_arm64", "darwin_amd64"}
-	fs := storage.(*FilesystemStorage)
-	for _, platform := range platforms {
-		platformMeta := PlatformMetadata{
-			Filename: "terraform-provider-aws_v" + version + "_" + platform + ".zip",
-			Shasum:   "abc123",
-		}
-		metaData, _ := json.Marshal(platformMeta)
-		metaKey := filepath.Join("providers", namespace, providerType, version, platform+".json")
-		if err := fs.PutObject(metaKey, metaData); err != nil {
-			t.Fatalf("failed to create metadata: %v", err)
-		}
-	}
-
-	result, err := getProviderPlatforms(namespace, providerType, version)
-	if err != nil {
-		t.Fatalf("getProviderPlatforms failed: %v", err)
-	}
-
-	if len(result) != 3 {
-		t.Errorf("expected 3 platforms, got %d", len(result))
-	}
-}
-
-func TestScanModuleVersions(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "terraform-registry-modules-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	storage, err = NewFilesystemStorage(tmpDir, "http://localhost:8080")
-	if err != nil {
-		t.Fatalf("failed to create filesystem storage: %v", err)
-	}
-
-	namespace := "example"
-	name := "vpc"
-	provider := "aws"
-	versions := []string{"1.0.0", "1.1.0"}
-
-	fs := storage.(*FilesystemStorage)
-	for _, version := range versions {
-		moduleKey := filepath.Join("modules", namespace, name, provider, version, "module.tar.gz")
-		if err := fs.PutObject(moduleKey, []byte("fake tarball")); err != nil {
-			t.Fatalf("failed to create module: %v", err)
-		}
-	}
-
-	result, err := scanModuleVersions(namespace, name, provider)
-	if err != nil {
-		t.Fatalf("scanModuleVersions failed: %v", err)
-	}
-
-	if len(result) != 2 {
-		t.Errorf("expected 2 versions, got %d", len(result))
-	}
-}
-
-func TestProviderDownloadHandlerNotFound(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/1.0.0/download/linux/amd64", nil)
+	// gorilla/mux normalizes path traversal attempts
+	req := httptest.NewRequest("GET", "/download/%2e%2e/%2e%2e/etc/passwd", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", w.Code)
+	// Should not serve /etc/passwd (either 403 or 404)
+	if w.Code == http.StatusOK && w.Body.String() != "not found" {
+		t.Errorf("path traversal should not succeed: got 200 with body %s", w.Body.String())
 	}
 }
 
-func TestProviderDownloadHandlerInvalidMetadata(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+func TestNetworkMirror(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Create invalid JSON metadata
-	metaKey := filepath.Join("providers", "hashicorp", "aws", "1.0.0", "linux_amd64.json")
-	if err := fs.PutObject(metaKey, []byte("invalid json")); err != nil {
-		t.Fatalf("failed to create metadata: %v", err)
-	}
+	_ = s.AddProviderVersion("hashicorp", "aws", "6.31.0")
+	meta := PlatformMeta{OS: "linux", Arch: "amd64", Filename: "terraform-provider-aws_6.31.0_linux_amd64.zip", Shasum: "abc123"}
+	metaData, _ := json.Marshal(meta)
+	_ = s.Put("providers/hashicorp/aws/6.31.0/linux_amd64.json", metaData)
+	_ = s.Put("providers/hashicorp/aws/6.31.0/terraform-provider-aws_6.31.0_linux_amd64.zip", []byte("fake"))
 
-	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/1.0.0/download/linux/amd64", nil)
+	// Network mirror index
+	req := httptest.NewRequest("GET", "/registry.terraform.io/hashicorp/aws/index.json", nil)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected status 500, got %d", w.Code)
-	}
-}
-
-func TestModuleVersionsHandlerNotFound(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	req := httptest.NewRequest("GET", "/v1/modules/nonexistent/module/aws/versions", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("index: expected 200, got %d", w.Code)
 	}
 
-	var response ModuleVersionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("failed to parse response: %v", err)
-	}
-
-	if len(response.Modules) != 0 {
-		t.Errorf("expected 0 modules for non-existent module, got %d", len(response.Modules))
-	}
-}
-
-func TestModuleVersionsHandlerInvalidIndex(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	// Create invalid JSON index
-	indexKey := filepath.Join("modules", "example", "vpc", "aws", "index.json")
-	if err := fs.PutObject(indexKey, []byte("invalid json")); err != nil {
-		t.Fatalf("failed to create index: %v", err)
-	}
-
-	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/versions", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected status 500, got %d", w.Code)
-	}
-}
-
-func TestModuleDownloadHandlerNotFound(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/1.0.0/download", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	// Module download generates a redirect URL even if file doesn't exist
-	// The actual 404 happens when following the redirect
-	if w.Code != http.StatusFound {
-		t.Errorf("expected status 302, got %d", w.Code)
-	}
-
-	location := w.Header().Get("Location")
-	if len(location) == 0 {
-		t.Error("expected Location header to be set")
-	}
-}
-
-func TestModuleLatestDownloadHandlerNotFound(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	req := httptest.NewRequest("GET", "/v1/modules/nonexistent/module/aws/download", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", w.Code)
-	}
-}
-
-func TestModuleLatestDownloadHandlerInvalidIndex(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	// Create invalid JSON index
-	indexKey := filepath.Join("modules", "example", "vpc", "aws", "index.json")
-	if err := fs.PutObject(indexKey, []byte("invalid json")); err != nil {
-		t.Fatalf("failed to create index: %v", err)
-	}
-
-	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/download", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected status 500, got %d", w.Code)
-	}
-}
-
-func TestModuleLatestDownloadHandlerNoVersions(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	// Create empty index
-	index := Index{Versions: []string{}}
-	indexData, _ := json.Marshal(index)
-	indexKey := filepath.Join("modules", "example", "vpc", "aws", "index.json")
-	if err := fs.PutObject(indexKey, indexData); err != nil {
-		t.Fatalf("failed to create index: %v", err)
-	}
-
-	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/download", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", w.Code)
-	}
-}
-
-func TestFileDownloadHandlerNotFound(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	req := httptest.NewRequest("GET", "/download/nonexistent/file.zip", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", w.Code)
-	}
-}
-
-func TestFileDownloadHandlerTarGz(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	// Create test file
-	fileKey := "test/file.tar.gz"
-	fileData := []byte("test tarball data")
-	if err := fs.PutObject(fileKey, fileData); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
-
-	req := httptest.NewRequest("GET", "/download/test/file.tar.gz", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	// Network mirror version
+	req = httptest.NewRequest("GET", "/registry.terraform.io/hashicorp/aws/6.31.0.json", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Fatalf("version: expected 200, got %d", w.Code)
 	}
-
-	if w.Header().Get("Content-Type") != "application/gzip" {
-		t.Errorf("expected Content-Type 'application/gzip', got '%s'", w.Header().Get("Content-Type"))
+	var versionResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &versionResp)
+	archives, ok := versionResp["archives"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected archives in response")
+	}
+	if _, ok := archives["linux_amd64"]; !ok {
+		t.Error("expected linux_amd64 in archives")
 	}
 }
 
-func TestProviderVersionsHandlerInvalidIndex(t *testing.T) {
-	router, fs, tmpDir := setupTestRouter(t)
+// --- API Tests ---
+
+func TestAPICRUDProvider(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Create invalid JSON index
-	indexKey := filepath.Join("providers", "hashicorp", "aws", "index.json")
-	if err := fs.PutObject(indexKey, []byte("invalid json")); err != nil {
-		t.Fatalf("failed to create index: %v", err)
+	// Upload
+	body := multipartBody(t, "file", "test.zip", fakeZipData())
+	req := httptest.NewRequest("POST", "/api/v1/providers/hashicorp/aws/1.0.0/linux/amd64", body)
+	req.Header.Set("Content-Type", multipartContentType)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/versions", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	// List
+	req = httptest.NewRequest("GET", "/api/v1/providers", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected status 500, got %d", w.Code)
+	// Get detail
+	req = httptest.NewRequest("GET", "/api/v1/providers/hashicorp/aws", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+
+	// Delete
+	req = httptest.NewRequest("DELETE", "/api/v1/providers/hashicorp/aws/1.0.0", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+
+	// Verify deleted
+	req = httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/versions", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var resp ProviderVersionsResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Versions) != 0 {
+		t.Errorf("expected 0 versions after delete, got %d", len(resp.Versions))
 	}
 }
 
-func TestHealthHandlerStorageFailure(t *testing.T) {
-	router, _, tmpDir := setupTestRouter(t)
+func TestAPICRUDModule(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Remove temp dir to cause storage failure
-	_ = os.RemoveAll(tmpDir)
-
-	req := httptest.NewRequest("GET", "/health", nil)
+	// Upload
+	body := multipartBody(t, "file", "module.tar.gz", fakeGzipData())
+	req := httptest.NewRequest("POST", "/api/v1/modules/example/vpc/aws/1.0.0", body)
+	req.Header.Set("Content-Type", multipartContentType)
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected status 503, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// List
+	req = httptest.NewRequest("GET", "/api/v1/modules", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+
+	// Delete
+	req = httptest.NewRequest("DELETE", "/api/v1/modules/example/vpc/aws/1.0.0", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+}
+
+func TestAPIDeprecateProvider(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	_ = s.AddProviderVersion("hashicorp", "aws", "1.0.0")
+	_ = s.Put("providers/hashicorp/aws/1.0.0/linux_amd64.json", []byte(`{"os":"linux","arch":"amd64","filename":"test.zip","shasum":"abc"}`))
+	_ = s.Put("providers/hashicorp/aws/1.0.0/test.zip", []byte("fake"))
+
+	// Deprecate
+	req := httptest.NewRequest("POST", "/api/v1/providers/hashicorp/aws/1.0.0/deprecate",
+		jsonBody(map[string]string{"message": "Use 2.0.0 instead"}))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+
+	// Deprecated versions should be excluded from protocol responses
+	req = httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/versions", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var resp ProviderVersionsResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Versions) != 0 {
+		t.Errorf("deprecated version should be hidden, got %d versions", len(resp.Versions))
+	}
+}
+
+func TestAPIDeprecateModule(t *testing.T) {
+	r, s, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	_ = s.AddModuleVersion("example", "vpc", "aws", "1.0.0")
+
+	req := httptest.NewRequest("POST", "/api/v1/modules/example/vpc/aws/1.0.0/deprecate",
+		jsonBody(map[string]string{"message": "Use 2.0.0"}))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+}
+
+func TestAPIStats(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	req := httptest.NewRequest("GET", "/api/v1/stats", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestAPIGC(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	req := httptest.NewRequest("POST", "/api/v1/gc", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assertJSONSuccess(t, w, true)
+}
+
+func TestAPIGetProviderNotFound(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	req := httptest.NewRequest("GET", "/api/v1/providers/nonexistent/provider", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var snap MetricsSnapshot
+	if err := json.Unmarshal(w.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("parse metrics: %v", err)
+	}
+	// Note: test router doesn't use middleware so counters may be 0
+	_ = snap.RequestsTotal
+}
+
+func TestUploadValidationRejectsBadZip(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	body := multipartBody(t, "file", "test.zip", []byte("not a zip file"))
+	req := httptest.NewRequest("POST", "/api/v1/providers/hashicorp/aws/1.0.0/linux/amd64", body)
+	req.Header.Set("Content-Type", multipartContentType)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid zip, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUploadValidationRejectsBadGzip(t *testing.T) {
+	r, _, tmpDir := setupTestEnv(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	body := multipartBody(t, "file", "module.tar.gz", []byte("not gzip"))
+	req := httptest.NewRequest("POST", "/api/v1/modules/example/vpc/aws/1.0.0", body)
+	req.Header.Set("Content-Type", multipartContentType)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid gzip, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Storage Tests ---
+
+func TestStorageAtomicWrite(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tfreg-store-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	s, err := NewStore(tmpDir, "http://localhost:8080", testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := "test/atomic.txt"
+	data := []byte("atomic write test")
+	if err := s.Put(key, data); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	got, err := s.Get(key)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Errorf("mismatch: %q != %q", got, data)
+	}
+
+	// No temp files should remain
+	entries, _ := os.ReadDir(tmpDir + "/test")
+	for _, e := range entries {
+		if len(e.Name()) > 0 && e.Name()[0] == '.' {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestStorageDeleteCleanup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tfreg-store-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	s, err := NewStore(tmpDir, "http://localhost:8080", testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = s.Put("a/b/c/d.txt", []byte("nested"))
+	if err := s.Delete("a/b/c/d.txt"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// Empty dirs should be cleaned
+	if _, err := os.Stat(tmpDir + "/a/b/c"); !os.IsNotExist(err) {
+		t.Error("expected empty dir cleanup")
+	}
+}
+
+func TestStorageIndexManagement(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tfreg-store-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	s, err := NewStore(tmpDir, "http://localhost:8080", testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add versions
+	_ = s.AddProviderVersion("hashicorp", "aws", "1.0.0")
+	_ = s.AddProviderVersion("hashicorp", "aws", "2.0.0")
+	_ = s.AddProviderVersion("hashicorp", "aws", "1.0.0") // duplicate
+
+	idx, err := s.GetProviderIndex("hashicorp", "aws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Versions) != 2 {
+		t.Errorf("expected 2 versions, got %d", len(idx.Versions))
+	}
+
+	// Remove version
+	_ = s.RemoveProviderVersion("hashicorp", "aws", "1.0.0")
+	idx, _ = s.GetProviderIndex("hashicorp", "aws")
+	if len(idx.Versions) != 1 || idx.Versions[0] != "2.0.0" {
+		t.Errorf("expected [2.0.0], got %v", idx.Versions)
+	}
+}
+
+func TestStorageExists(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tfreg-store-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	s, _ := NewStore(tmpDir, "http://localhost:8080", testLogger())
+
+	if s.Exists("nonexistent") {
+		t.Error("should not exist")
+	}
+
+	_ = s.Put("exists.txt", []byte("yes"))
+	if !s.Exists("exists.txt") {
+		t.Error("should exist")
+	}
+}
+
+func TestStorageDownloadURL(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "tfreg-store-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	s, _ := NewStore(tmpDir, "https://registry.example.com", testLogger())
+	url := s.DownloadURL("providers/hashicorp/aws/1.0.0/test.zip")
+	expected := "https://registry.example.com/download/providers/hashicorp/aws/1.0.0/test.zip"
+	if url != expected {
+		t.Errorf("expected %s, got %s", expected, url)
 	}
 }

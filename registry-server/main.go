@@ -4,19 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
-	"sort"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gorilla/mux"
 )
 
 var (
-	storage Storage
+	store        *Store
+	keyStore     *KeyStore
+	auditLog     *AuditLog
+	metrics      *RegistryMetrics
+	webhooks     *WebhookManager
+	logger       *slog.Logger
 )
 
 // Terraform Protocol Types
@@ -25,7 +30,6 @@ type WellKnown struct {
 	ModulesV1   string `json:"modules.v1"`
 }
 
-// Provider Types
 type ProviderVersionsResponse struct {
 	Versions []ProviderVersion `json:"versions"`
 }
@@ -33,12 +37,7 @@ type ProviderVersionsResponse struct {
 type ProviderVersion struct {
 	Version   string             `json:"version"`
 	Protocols []string           `json:"protocols"`
-	Platforms []ProviderPlatform `json:"platforms"`
-}
-
-type ProviderPlatform struct {
-	OS   string `json:"os"`
-	Arch string `json:"arch"`
+	Platforms []PlatformMeta     `json:"platforms"`
 }
 
 type ProviderDownloadResponse struct {
@@ -59,10 +58,9 @@ type SigningKeys struct {
 
 type GPGPublicKey struct {
 	KeyID      string `json:"key_id"`
-	ASCIIArmor string `json:"ascii_armor"`
+	ASCIIArmor string `json:"ascii_armor,omitempty"`
 }
 
-// Module Types
 type ModuleVersionsResponse struct {
 	Modules []ModuleVersion `json:"modules"`
 }
@@ -71,130 +69,105 @@ type ModuleVersion struct {
 	Version string `json:"version"`
 }
 
-type ModuleDownloadResponse struct {
-	Source string `json:"source,omitempty"` // For download endpoint
-}
-
-type ModuleLatestResponse struct {
-	Version string     `json:"version"`
-	Root    ModuleRoot `json:"root,omitempty"`
-}
-
-type ModuleRoot struct {
-	Dependencies []string `json:"dependencies,omitempty"`
-	Providers    []string `json:"providers,omitempty"`
-}
-
-// Index Types
-type Index struct {
-	Versions []string `json:"versions"`
-}
-
-type PlatformMetadata struct {
-	Filename string `json:"filename"`
-	Shasum   string `json:"shasum"`
-}
-
-func init() {
-	// Skip storage initialization during tests
-	if os.Getenv("SKIP_STORAGE_INIT") == "true" {
-		return
-	}
-
-	storageType := os.Getenv("STORAGE_TYPE")
-	if storageType == "" {
-		storageType = "filesystem" // Default to filesystem
-	}
-
-	log.Printf("Initializing %s storage...", storageType)
-
-	if storageType == "s3" {
-		initS3Storage()
-	} else {
-		initFilesystemStorage()
-	}
-}
-
-func initS3Storage() {
-	bucketName := os.Getenv("S3_BUCKET")
-	if bucketName == "" {
-		bucketName = "terraform-registry"
-	}
-
-	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = "us-gov-west-1"
-	}
-
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
-	if err != nil {
-		log.Fatalf("unable to load SDK config, %v", err)
-	}
-
-	s3Client := s3.NewFromConfig(cfg)
-	storage = NewS3Storage(s3Client, bucketName)
-	log.Printf("Using S3 storage: bucket=%s region=%s", bucketName, region)
-}
-
-func initFilesystemStorage() {
-	basePath := os.Getenv("STORAGE_PATH")
-	if basePath == "" {
-		basePath = "/var/lib/terraform-registry"
-	}
-
-	baseURL := os.Getenv("BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
-	}
-
-	var err error
-	storage, err = NewFilesystemStorage(basePath, baseURL)
-	if err != nil {
-		log.Fatalf("failed to initialize filesystem storage: %v", err)
-	}
-	log.Printf("Using filesystem storage: path=%s url=%s", basePath, baseURL)
-}
-
 func main() {
+	// Structured logging
+	logLevel := slog.LevelInfo
+	if os.Getenv("LOG_LEVEL") == "debug" {
+		logLevel = slog.LevelDebug
+	}
+	logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+
+	// Config from environment
+	basePath := envOrDefault("STORAGE_PATH", "/var/lib/terraform-registry")
+	baseURL := envOrDefault("BASE_URL", "http://localhost:8080")
+	port := envOrDefault("PORT", "8080")
+	keysFile := envOrDefault("API_KEYS_FILE", filepath_join(basePath, "keys.json"))
+	auditPath := envOrDefault("AUDIT_LOG", "")
+	rateLimit := envOrDefault("RATE_LIMIT", "100")
+	rateWindow := envOrDefault("RATE_WINDOW", "1m")
+
+	// Initialize upload size limit
+	SetMaxUploadSize()
+
+	// Initialize storage
+	var err error
+	store, err = NewStore(basePath, baseURL, logger)
+	if err != nil {
+		logger.Error("failed to initialize storage", "error", err)
+		os.Exit(1)
+	}
+
+	// Initialize API keys
+	keyStore, err = NewKeyStore(keysFile, logger)
+	if err != nil {
+		logger.Error("failed to initialize API keys", "error", err)
+		os.Exit(1)
+	}
+
+	// Initialize audit log
+	auditLog, err = NewAuditLog(auditPath, logger)
+	if err != nil {
+		logger.Error("failed to initialize audit log", "error", err)
+		os.Exit(1)
+	}
+	defer func() { _ = auditLog.Close() }()
+
+	// Initialize metrics
+	metrics = NewMetrics()
+
+	// Initialize webhooks
+	webhooks = NewWebhookManager(loadWebhookConfigPath(), logger)
+
+	// Initialize rate limiter
+	var rl *RateLimiter
+	var rlRate int
+	var rlWindow time.Duration
+	if _, err := fmt.Sscanf(rateLimit, "%d", &rlRate); err != nil || rlRate <= 0 {
+		rlRate = 100
+	}
+	if rlWindow, err = time.ParseDuration(rateWindow); err != nil {
+		rlWindow = time.Minute
+	}
+	rl = NewRateLimiter(rlRate, rlWindow, logger)
+
+	// Build router
 	r := mux.NewRouter()
 
-	// Discovery endpoint
-	r.HandleFunc("/.well-known/terraform.json", wellKnownHandler).Methods("GET")
+	// Middleware chain (order matters)
+	r.Use(metricsMiddleware(metrics))
+	r.Use(rl.Middleware)
+	r.Use(auditMiddleware(auditLog, keyStore))
+	r.Use(authMiddleware(keyStore, logger))
 
-	// Provider endpoints (registry protocol)
+	// Terraform protocol endpoints (always public)
+	r.HandleFunc("/.well-known/terraform.json", wellKnownHandler).Methods("GET")
 	r.HandleFunc("/v1/providers/{namespace}/{type}/versions", providerVersionsHandler).Methods("GET")
 	r.HandleFunc("/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}", providerDownloadHandler).Methods("GET")
-
-	// Network mirror endpoints (Terraform CLI format)
 	r.HandleFunc("/{hostname}/{namespace}/{type}/index.json", networkMirrorIndexHandler).Methods("GET")
 	r.HandleFunc("/{hostname}/{namespace}/{type}/{version}.json", networkMirrorVersionHandler).Methods("GET")
-
-	// Module endpoints
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/versions", moduleVersionsHandler).Methods("GET")
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/{version}/download", moduleDownloadHandler).Methods("GET")
 	r.HandleFunc("/v1/modules/{namespace}/{name}/{provider}/download", moduleLatestDownloadHandler).Methods("GET")
-
-	// File download endpoint (for filesystem storage)
 	r.HandleFunc("/download/{path:.*}", fileDownloadHandler).Methods("GET")
 
-	// Health check
+	// Health and metrics
 	r.HandleFunc("/health", healthHandler).Methods("GET")
+	r.HandleFunc("/metrics", prometheusHandler(metrics)).Methods("GET")
 
-	// Management API endpoints
+	// Management API
 	api := r.PathPrefix("/api/v1").Subrouter()
 	api.HandleFunc("/stats", registryStatsHandler).Methods("GET")
-
-	// Provider management
 	api.HandleFunc("/providers", listProvidersHandler).Methods("GET")
 	api.HandleFunc("/providers/{namespace}/{name}", getProviderHandler).Methods("GET")
-	api.HandleFunc("/providers/{namespace}/{name}/{version}/{os}/{arch}", requireAuth(uploadProviderHandler)).Methods("POST")
-	api.HandleFunc("/providers/{namespace}/{name}/{version}", requireAuth(deleteProviderVersionHandler)).Methods("DELETE")
-
-	// Module management
+	api.HandleFunc("/providers/{namespace}/{name}/{version}/{os}/{arch}", uploadProviderHandler).Methods("POST")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}", deleteProviderVersionHandler).Methods("DELETE")
+	api.HandleFunc("/providers/{namespace}/{name}/{version}/deprecate", deprecateProviderHandler).Methods("POST")
 	api.HandleFunc("/modules", listModulesHandler).Methods("GET")
 	api.HandleFunc("/modules/{namespace}/{name}/{provider}", getModuleHandler).Methods("GET")
-	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", requireAuth(uploadModuleHandler)).Methods("POST")
-	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", requireAuth(deleteModuleVersionHandler)).Methods("DELETE")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", uploadModuleHandler).Methods("POST")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", deleteModuleVersionHandler).Methods("DELETE")
+	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}/deprecate", deprecateModuleHandler).Methods("POST")
+	api.HandleFunc("/gc", gcHandler).Methods("POST")
 
 	// Web UI
 	r.PathPrefix("/ui").HandlerFunc(uiHandler)
@@ -202,64 +175,99 @@ func main() {
 		http.Redirect(w, r, "/ui", http.StatusFound)
 	})
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Graceful shutdown
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 5 * time.Minute, // Long for large uploads
+		IdleTimeout:  120 * time.Second,
 	}
 
-	log.Printf("Starting Terraform registry on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	// Start periodic GC
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			n, err := store.GarbageCollect()
+			if err != nil {
+				logger.Error("GC failed", "error", err)
+			} else if n > 0 {
+				logger.Info("GC completed", "files_removed", n)
+			}
+		}
+	}()
+
+	// Channel to receive errors from ListenAndServe
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("starting terraform registry",
+			"port", port,
+			"storage", basePath,
+			"url", baseURL,
+			"rate_limit", fmt.Sprintf("%d/%s", rlRate, rateWindow),
+		)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	// Wait for interrupt or error
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			logger.Error("server error", "error", err)
+			os.Exit(1)
+		}
+	case sig := <-quit:
+		logger.Info("shutting down", "signal", sig.String())
+	}
+
+	// Graceful shutdown with 30s deadline
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("forced shutdown", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("server stopped cleanly")
 }
 
+// --- Protocol Handlers ---
+
 func wellKnownHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	SetTerraformProtocolHeaders(w)
 	_ = json.NewEncoder(w).Encode(WellKnown{
 		ProvidersV1: "/v1/providers/",
 		ModulesV1:   "/v1/modules/",
 	})
 }
 
-// Provider Handlers
 func providerVersionsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	namespace := vars["namespace"]
 	providerType := vars["type"]
 
-	log.Printf("Provider versions request: %s/%s", namespace, providerType)
+	logger.Debug("provider versions", "namespace", namespace, "type", providerType)
+	metrics.ProviderDownloads.Add(1)
 
-	// Try to read index.json
-	key := fmt.Sprintf("providers/%s/%s/index.json", namespace, providerType)
-	obj, err := storage.GetObject(key)
+	idx, err := store.GetProviderIndex(namespace, providerType)
 	if err != nil {
-		log.Printf("Error fetching provider index: %v", err)
-		// Scan storage for versions
-		versions, err := scanProviderVersions(namespace, providerType)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Provider not found: %v", err), http.StatusNotFound)
-			return
-		}
-
-		response := ProviderVersionsResponse{Versions: versions}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		http.Error(w, `{"error":"provider not found"}`, http.StatusNotFound)
 		return
 	}
 
-	var index Index
-	if err := json.Unmarshal(obj, &index); err != nil {
-		http.Error(w, "Invalid index format", http.StatusInternalServerError)
-		return
-	}
-
-	// Build response with version details
 	var versions []ProviderVersion
-	for _, v := range index.Versions {
-		platforms, err := getProviderPlatforms(namespace, providerType, v)
-		if err != nil {
-			log.Printf("Error getting platforms for %s/%s@%s: %v", namespace, providerType, v, err)
+	for _, v := range idx.Versions {
+		// Skip deprecated versions
+		metaKey := fmt.Sprintf("providers/%s/%s/%s/metadata.json", namespace, providerType, v)
+		if meta, err := store.GetVersionMetadata(metaKey); err == nil && meta.Deprecated {
 			continue
 		}
 
+		platforms, _ := store.GetProviderPlatforms(namespace, providerType, v)
 		versions = append(versions, ProviderVersion{
 			Version:   v,
 			Protocols: []string{"5.0"},
@@ -267,9 +275,14 @@ func providerVersionsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	response := ProviderVersionsResponse{Versions: versions}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	if len(versions) == 0 {
+		SetTerraformProtocolHeaders(w)
+		http.Error(w, `{"error":"provider not found"}`, http.StatusNotFound)
+		return
+	}
+
+	SetTerraformProtocolHeaders(w)
+	_ = json.NewEncoder(w).Encode(ProviderVersionsResponse{Versions: versions})
 }
 
 func providerDownloadHandler(w http.ResponseWriter, r *http.Request) {
@@ -277,95 +290,68 @@ func providerDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	namespace := vars["namespace"]
 	providerType := vars["type"]
 	version := vars["version"]
-	osArch := fmt.Sprintf("%s_%s", vars["os"], vars["arch"])
+	osName := vars["os"]
+	arch := vars["arch"]
 
-	log.Printf("Provider download request: %s/%s@%s (%s)", namespace, providerType, version, osArch)
+	logger.Debug("provider download", "namespace", namespace, "type", providerType,
+		"version", version, "os", osName, "arch", arch)
+	metrics.ProviderDownloads.Add(1)
 
-	// Get platform metadata
-	metaKey := fmt.Sprintf("providers/%s/%s/%s/%s.json", namespace, providerType, version, osArch)
-	metaObj, err := storage.GetObject(metaKey)
+	metaKey := fmt.Sprintf("providers/%s/%s/%s/%s_%s.json", namespace, providerType, version, osName, arch)
+	metaData, err := store.Get(metaKey)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Platform not found: %v", err), http.StatusNotFound)
+		http.Error(w, `{"error":"platform not found"}`, http.StatusNotFound)
 		return
 	}
 
-	var metadata PlatformMetadata
-	if err := json.Unmarshal(metaObj, &metadata); err != nil {
-		http.Error(w, "Invalid metadata format", http.StatusInternalServerError)
+	var meta PlatformMeta
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		http.Error(w, `{"error":"invalid metadata"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Generate download URL
-	zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, metadata.Filename)
-	downloadURL, err := storage.GenerateDownloadURL(zipKey)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error generating download URL: %v", err), http.StatusInternalServerError)
-		return
+	zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, meta.Filename)
+
+	// Load GPG key if configured
+	var signingKeys SigningKeys
+	gpgKeyPath := fmt.Sprintf("providers/%s/%s/%s/metadata.json", namespace, providerType, version)
+	if vm, err := store.GetVersionMetadata(gpgKeyPath); err == nil && vm.GPGKeyArmor != "" {
+		signingKeys.GPGPublicKeys = []GPGPublicKey{{
+			KeyID:      vm.GPGKeyID,
+			ASCIIArmor: vm.GPGKeyArmor,
+		}}
 	}
 
-	response := ProviderDownloadResponse{
+	SetTerraformProtocolHeaders(w)
+	_ = json.NewEncoder(w).Encode(ProviderDownloadResponse{
 		Protocols:   []string{"5.0"},
-		OS:          vars["os"],
-		Arch:        vars["arch"],
-		Filename:    metadata.Filename,
-		DownloadURL: downloadURL,
-		Shasum:      metadata.Shasum,
-		SigningKeys: SigningKeys{
-			GPGPublicKeys: []GPGPublicKey{},
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+		OS:          osName,
+		Arch:        arch,
+		Filename:    meta.Filename,
+		DownloadURL: store.DownloadURL(zipKey),
+		Shasum:      meta.Shasum,
+		SigningKeys: signingKeys,
+	})
 }
 
-// Network Mirror Handlers (Terraform CLI network_mirror format)
 func networkMirrorIndexHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	// hostname is ignored (e.g., registry.terraform.io)
 	namespace := vars["namespace"]
 	providerType := vars["type"]
 
-	log.Printf("Network mirror index request: %s/%s", namespace, providerType)
-
-	// Get versions using existing logic
-	key := fmt.Sprintf("providers/%s/%s/index.json", namespace, providerType)
-	obj, err := storage.GetObject(key)
-
-	var versions []string
+	idx, err := store.GetProviderIndex(namespace, providerType)
 	if err != nil {
-		// Fallback to scanning
-		providerVersions, err := scanProviderVersions(namespace, providerType)
-		if err != nil {
-			http.Error(w, "Provider not found", http.StatusNotFound)
-			return
-		}
-		for _, pv := range providerVersions {
-			versions = append(versions, pv.Version)
-		}
-	} else {
-		var index struct {
-			Versions []string `json:"versions"`
-		}
-		if err := json.Unmarshal(obj, &index); err != nil {
-			http.Error(w, "Invalid index format", http.StatusInternalServerError)
-			return
-		}
-		versions = index.Versions
+		http.Error(w, `{"error":"provider not found"}`, http.StatusNotFound)
+		return
 	}
 
-	// Network mirror index format: {"versions":{"1.0.0":{},"2.0.0":{}}}
 	versionMap := make(map[string]struct{})
-	for _, v := range versions {
+	for _, v := range idx.Versions {
 		versionMap[v] = struct{}{}
 	}
 
-	response := map[string]interface{}{
-		"versions": versionMap,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	SetTerraformProtocolHeaders(w)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"versions": versionMap})
 }
 
 func networkMirrorVersionHandler(w http.ResponseWriter, r *http.Request) {
@@ -374,96 +360,63 @@ func networkMirrorVersionHandler(w http.ResponseWriter, r *http.Request) {
 	providerType := vars["type"]
 	version := vars["version"]
 
-	log.Printf("Network mirror version request: %s/%s@%s", namespace, providerType, version)
-
-	// Get all platforms for this version
-	platforms, err := getProviderPlatforms(namespace, providerType, version)
+	platforms, err := store.GetProviderPlatforms(namespace, providerType, version)
 	if err != nil {
-		http.Error(w, "Version not found", http.StatusNotFound)
+		http.Error(w, `{"error":"version not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// Network mirror version format: {"archives":{"linux_amd64":{"url":"...","hashes":["h1:..."]}}}
 	archives := make(map[string]map[string]interface{})
-
-	for _, platform := range platforms {
-		platformKey := fmt.Sprintf("%s_%s", platform.OS, platform.Arch)
-		metadataKey := fmt.Sprintf("providers/%s/%s/%s/%s_%s.json", namespace, providerType, version, platform.OS, platform.Arch)
-
-		obj, err := storage.GetObject(metadataKey)
+	for _, p := range platforms {
+		platformKey := p.OS + "_" + p.Arch
+		metaKey := fmt.Sprintf("providers/%s/%s/%s/%s_%s.json", namespace, providerType, version, p.OS, p.Arch)
+		metaData, err := store.Get(metaKey)
 		if err != nil {
 			continue
 		}
-
-		var metadata struct {
-			Filename string `json:"filename"`
-			Shasum   string `json:"shasum"`
-		}
-		if err := json.Unmarshal(obj, &metadata); err != nil {
+		var meta PlatformMeta
+		if err := json.Unmarshal(metaData, &meta); err != nil {
 			continue
 		}
 
-		zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, metadata.Filename)
-		downloadURL, err := storage.GenerateDownloadURL(zipKey)
-		if err != nil {
-			continue
-		}
-
+		zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, meta.Filename)
 		archives[platformKey] = map[string]interface{}{
-			"url":    downloadURL,
-			"hashes": []string{fmt.Sprintf("zh:%s", metadata.Shasum)},
+			"url":    store.DownloadURL(zipKey),
+			"hashes": []string{fmt.Sprintf("zh:%s", meta.Shasum)},
 		}
 	}
 
-	response := map[string]interface{}{
-		"archives": archives,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	SetTerraformProtocolHeaders(w)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"archives": archives})
 }
 
-// Module Handlers
 func moduleVersionsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	namespace := vars["namespace"]
 	name := vars["name"]
 	provider := vars["provider"]
 
-	log.Printf("Module versions request: %s/%s/%s", namespace, name, provider)
+	logger.Debug("module versions", "namespace", namespace, "name", name, "provider", provider)
 
-	// Read index.json
-	key := fmt.Sprintf("modules/%s/%s/%s/index.json", namespace, name, provider)
-	obj, err := storage.GetObject(key)
+	idx, err := store.GetModuleIndex(namespace, name, provider)
 	if err != nil {
-		log.Printf("Error fetching module index: %v", err)
-		// Scan storage for versions
-		versions, err := scanModuleVersions(namespace, name, provider)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Module not found: %v", err), http.StatusNotFound)
-			return
-		}
-
-		response := ModuleVersionsResponse{Modules: versions}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-		return
-	}
-
-	var index Index
-	if err := json.Unmarshal(obj, &index); err != nil {
-		http.Error(w, "Invalid index format", http.StatusInternalServerError)
+		http.Error(w, `{"error":"module not found"}`, http.StatusNotFound)
 		return
 	}
 
 	var modules []ModuleVersion
-	for _, v := range index.Versions {
+	for _, v := range idx.Versions {
 		modules = append(modules, ModuleVersion{Version: v})
 	}
 
-	response := ModuleVersionsResponse{Modules: modules}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	if len(modules) == 0 {
+		SetTerraformProtocolHeaders(w)
+		http.Error(w, `{"error":"module not found"}`, http.StatusNotFound)
+		return
+	}
+
+	SetTerraformProtocolHeaders(w)
+	_ = json.NewEncoder(w).Encode(ModuleVersionsResponse{Modules: modules})
 }
 
 func moduleDownloadHandler(w http.ResponseWriter, r *http.Request) {
@@ -473,18 +426,21 @@ func moduleDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	provider := vars["provider"]
 	version := vars["version"]
 
-	log.Printf("Module download request: %s/%s/%s@%s", namespace, name, provider, version)
+	logger.Debug("module download", "namespace", namespace, "name", name,
+		"provider", provider, "version", version)
+	metrics.ModuleDownloads.Add(1)
 
-	// Generate download URL for module tarball
 	key := fmt.Sprintf("modules/%s/%s/%s/%s/module.tar.gz", namespace, name, provider, version)
-	downloadURL, err := storage.GenerateDownloadURL(key)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Module not found: %v", err), http.StatusNotFound)
+	if !store.Exists(key) {
+		http.Error(w, `{"error":"module not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// Terraform expects an HTTP redirect to the download URL
-	http.Redirect(w, r, downloadURL, http.StatusFound)
+	// Per Terraform protocol: return 204 with X-Terraform-Get header
+	downloadURL := store.DownloadURL(key)
+	w.Header().Set("X-Terraform-Get", downloadURL)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func moduleLatestDownloadHandler(w http.ResponseWriter, r *http.Request) {
@@ -493,169 +449,70 @@ func moduleLatestDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	name := vars["name"]
 	provider := vars["provider"]
 
-	log.Printf("Module latest download request: %s/%s/%s", namespace, name, provider)
+	logger.Debug("module latest download", "namespace", namespace, "name", name, "provider", provider)
 
-	// Get latest version from index
-	key := fmt.Sprintf("modules/%s/%s/%s/index.json", namespace, name, provider)
-	obj, err := storage.GetObject(key)
-	if err != nil {
-		http.Error(w, "Module not found", http.StatusNotFound)
+	idx, err := store.GetModuleIndex(namespace, name, provider)
+	if err != nil || len(idx.Versions) == 0 {
+		http.Error(w, `{"error":"no versions available"}`, http.StatusNotFound)
 		return
 	}
 
-	var index Index
-	if err := json.Unmarshal(obj, &index); err != nil {
-		http.Error(w, "Invalid index format", http.StatusInternalServerError)
-		return
-	}
-
-	if len(index.Versions) == 0 {
-		http.Error(w, "No versions available", http.StatusNotFound)
-		return
-	}
-
-	// Get latest version (last in sorted list)
-	latestVersion := index.Versions[len(index.Versions)-1]
-
-	// Generate download URL
+	latestVersion := idx.Versions[len(idx.Versions)-1]
 	downloadKey := fmt.Sprintf("modules/%s/%s/%s/%s/module.tar.gz", namespace, name, provider, latestVersion)
-	downloadURL, err := storage.GenerateDownloadURL(downloadKey)
-	if err != nil {
-		http.Error(w, "Module not found", http.StatusNotFound)
-		return
-	}
+	downloadURL := store.DownloadURL(downloadKey)
 
-	// Return version info
 	w.Header().Set("X-Terraform-Get", downloadURL)
-	response := ModuleLatestResponse{
-		Version: latestVersion,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+	SetTerraformProtocolHeaders(w)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"version": latestVersion,
+	})
 }
 
-// File download handler for filesystem storage
 func fileDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	path := vars["path"]
 
-	log.Printf("File download request: %s", path)
-
-	// Only works with filesystem storage
-	fsStorage, ok := storage.(*FilesystemStorage)
-	if !ok {
-		http.Error(w, "Direct file download not available", http.StatusNotImplemented)
+	// Prevent path traversal
+	if strings.Contains(path, "..") {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	// Set appropriate headers
+	data, err := store.Get(path)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	if strings.HasSuffix(path, ".tar.gz") {
 		w.Header().Set("Content-Type", "application/gzip")
 	} else if strings.HasSuffix(path, ".zip") {
 		w.Header().Set("Content-Type", "application/zip")
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
 	}
-
-	if err := fsStorage.ServeFile(w, path); err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	_, _ = w.Write(data)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	if err := storage.HealthCheck(); err != nil {
-		http.Error(w, fmt.Sprintf("Storage not accessible: %v", err), http.StatusServiceUnavailable)
+	if err := store.HealthCheck(); err != nil {
+		http.Error(w, fmt.Sprintf("unhealthy: %v", err), http.StatusServiceUnavailable)
 		return
 	}
-
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("OK"))
+	_, _ = w.Write([]byte(`{"status":"healthy"}`))
 }
 
-// Helper functions
-func scanProviderVersions(namespace, providerType string) ([]ProviderVersion, error) {
-	prefix := fmt.Sprintf("providers/%s/%s/", namespace, providerType)
-	_, prefixes, err := storage.ListObjects(prefix, "/")
-	if err != nil {
-		return nil, err
-	}
+// --- Helpers ---
 
-	versionMap := make(map[string]bool)
-	for _, p := range prefixes {
-		parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
-		if len(parts) >= 4 {
-			version := parts[3]
-			versionMap[version] = true
-		}
+func envOrDefault(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-
-	var versions []ProviderVersion
-	for v := range versionMap {
-		platforms, err := getProviderPlatforms(namespace, providerType, v)
-		if err != nil {
-			continue
-		}
-		versions = append(versions, ProviderVersion{
-			Version:   v,
-			Protocols: []string{"5.0"},
-			Platforms: platforms,
-		})
-	}
-
-	return versions, nil
+	return defaultVal
 }
 
-func getProviderPlatforms(namespace, providerType, version string) ([]ProviderPlatform, error) {
-	prefix := fmt.Sprintf("providers/%s/%s/%s/", namespace, providerType, version)
-	objects, _, err := storage.ListObjects(prefix, "")
-	if err != nil {
-		return nil, err
-	}
-
-	platformMap := make(map[string]bool)
-	for _, obj := range objects {
-		if strings.HasSuffix(obj, ".json") && !strings.HasSuffix(obj, "index.json") {
-			parts := strings.Split(obj, "/")
-			if len(parts) >= 5 {
-				filename := parts[4]
-				osArch := strings.TrimSuffix(filename, ".json")
-				platformMap[osArch] = true
-			}
-		}
-	}
-
-	var platforms []ProviderPlatform
-	for osArch := range platformMap {
-		parts := strings.Split(osArch, "_")
-		if len(parts) == 2 {
-			platforms = append(platforms, ProviderPlatform{
-				OS:   parts[0],
-				Arch: parts[1],
-			})
-		}
-	}
-
-	sort.Slice(platforms, func(i, j int) bool {
-		return platforms[i].OS+platforms[i].Arch < platforms[j].OS+platforms[j].Arch
-	})
-
-	return platforms, nil
-}
-
-func scanModuleVersions(namespace, name, provider string) ([]ModuleVersion, error) {
-	prefix := fmt.Sprintf("modules/%s/%s/%s/", namespace, name, provider)
-	_, prefixes, err := storage.ListObjects(prefix, "/")
-	if err != nil {
-		return nil, err
-	}
-
-	var versions []ModuleVersion
-	for _, p := range prefixes {
-		parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
-		if len(parts) >= 5 {
-			version := parts[4]
-			versions = append(versions, ModuleVersion{Version: version})
-		}
-	}
-
-	return versions, nil
+func filepath_join(parts ...string) string {
+	return strings.Join(parts, "/")
 }
