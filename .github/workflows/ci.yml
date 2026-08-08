@@ -209,6 +209,10 @@ jobs:
           # Wait for registry to be ready
           timeout 30 bash -c 'until curl -f http://localhost:5000/health; do sleep 1; done'
 
+          # Make test-data writable (container runs as nobody)
+          sleep 2
+          chmod -R 777 test-data/
+
       - name: Test well-known endpoint
         run: |
           curl -f http://localhost:5000/.well-known/terraform.json
