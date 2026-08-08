@@ -202,6 +202,7 @@ jobs:
           docker run -d \
             --name terraform-registry \
             -p 5000:8080 \
+            --user $(id -u):$(id -g) \
             -v $(pwd)/test-data:/var/lib/terraform-registry \
             -e BASE_URL=http://localhost:5000 \
             -e API_KEYS_FILE=/tmp/keys.json \
