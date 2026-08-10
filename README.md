@@ -1,347 +1,199 @@
 # Terraform Registry
 
-<p align="center">
-  <img src="https://img.shields.io/badge/terraform-1.5+-5C4EE5?logo=terraform" alt="Terraform 1.5+">
-  <img src="https://img.shields.io/badge/go-1.26+-00ADD8?logo=go" alt="Go 1.26+">
-  <img src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker" alt="Docker Ready">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
-</p>
+A production-focused, self-hosted Terraform provider and module registry. It is a single Go server, an embedded web UI, and the `tfreg` CLI backed by a persistent filesystem volume.
 
-A production-ready, self-hosted Terraform registry for **providers** and **modules**. Filesystem-only storage (PVC-mountable), zero cloud dependencies. Built for air-gapped and private environments.
+> Unofficial community implementation; not affiliated with HashiCorp.
 
-> **⚠️ Disclaimer:** This is an unofficial, community-maintained implementation of the Terraform Registry Protocol. This project is not affiliated with, endorsed by, or sponsored by HashiCorp, Inc. Terraform® is a registered trademark of HashiCorp, Inc.
+## What works
 
-## Features
+- Terraform provider registry protocol and provider network mirror protocol
+- Terraform module registry protocol
+- Provider/module upload, download, listing, deprecation, and deletion
+- SHA-256 generation by the server and verification by `tfreg pull provider`
+- RBAC API keys (`read`, `write`, `admin`) for management mutations
+- Atomic writes, bounded streaming uploads/downloads, input validation, and traversal protection
+- Embedded dashboard at `/ui`
+- Prometheus metrics, JSON logs, audit logs, rate limiting, and signed webhooks
+- Linux, macOS, and Windows release binaries; multi-architecture container images
 
-- **Providers & Modules** — Host both in a single registry
-- **Filesystem Storage** — PVC-mountable, atomic writes, no cloud dependencies
-- **Web Dashboard** — Built-in UI at `/ui` for browsing, uploading, and managing artifacts
-- **CLI Tool** (`tfreg`) — Push, pull, bundle, list, and delete from the command line
-- **RBAC API Keys** — Per-user keys with read/write/admin permissions
-- **Metrics** — Prometheus-compatible endpoint at `/metrics`
-- **Webhooks** — Notify external systems on publish, delete, and deprecate events
-- **Version Deprecation** — Mark versions as deprecated (hidden from `terraform init`)
-- **GPG Signing** — GPG key management for provider artifact verification
-- **Rate Limiting** — Per-IP rate limiting with configurable thresholds
-- **Audit Logging** — Structured JSON audit trail for all management operations
-- **Air-Gap Ready** — No external calls, works fully offline
-
-## Quick Start
-
-### Docker Compose
+## Deploy in five minutes
 
 ```bash
-git clone https://github.com/BrandenCobb/terraform-registry.git
-cd terraform-registry
-docker-compose up -d
+export REGISTRY_API_KEY="$(openssl rand -hex 32)"
+export BASE_URL="http://localhost:5000"
+docker compose up -d
+curl -fsS http://localhost:5000/health
 ```
 
-The registry is available at `http://localhost:5000` with the web UI at `http://localhost:5000/ui`.
+The named Docker volume is persistent and writable by the non-root container. Save `REGISTRY_API_KEY`; it is the initial admin credential. If it is omitted, the server generates a key once and prints it to container logs.
 
-### Docker
+Open <http://localhost:5000/ui>.
+
+### Pull the published image directly
 
 ```bash
-docker run -d \
-  --name terraform-registry \
+docker volume create terraform-registry-data
+docker run -d --name terraform-registry \
   -p 5000:8080 \
-  -v $(pwd)/data:/var/lib/terraform-registry \
-  ghcr.io/brandencobb/terraform-registry:latest
+  -v terraform-registry-data:/var/lib/terraform-registry \
+  -e BASE_URL=http://localhost:5000 \
+  -e REGISTRY_API_KEY="$REGISTRY_API_KEY" \
+  ghcr.io/brandencobb/terraform-registry:v2.1.0
 ```
 
-### First Run
+Production deployments must set `BASE_URL` to the externally reachable HTTPS URL and terminate TLS at a reverse proxy or ingress. Run one server replica per filesystem volume.
 
-On first start, a default admin API key is printed to stderr:
+## Install `tfreg`
 
-```
-=== DEFAULT API KEY (save this!) ===
-6cc82f43c88710568120e4a3ff62c34b99a0d4bedd90ce4ae2bb91b0820894bd
-====================================
-```
-
-Save this key — it's the only time it's shown.
-
-## Upload Artifacts
-
-### Using the CLI (`tfreg`)
+Download a directly runnable binary from the [latest release](https://github.com/BrandenCobb/terraform-registry/releases/latest):
 
 ```bash
-# Download tfreg from releases or build it
-cd cmd/tfreg && go build -o tfreg .
+curl -fLO https://github.com/BrandenCobb/terraform-registry/releases/download/v2.1.0/tfreg-linux-amd64
+chmod +x tfreg-linux-amd64
+sudo install tfreg-linux-amd64 /usr/local/bin/tfreg
 
-# Set registry URL
-export TFREG_REGISTRY=http://localhost:5000
-export TFREG_API_KEY=<your-api-key>
+tfreg version
+```
 
-# Push a provider
+Set connection defaults:
+
+```bash
+export TFREG_REGISTRY=https://registry.example.com
+export TFREG_API_KEY="$REGISTRY_API_KEY"
+```
+
+## Publish artifacts
+
+### Provider
+
+Bundle a provider executable, then upload the ZIP:
+
+```bash
+tfreg bundle provider \
+  --namespace acme --name example --version 1.2.3 \
+  --os linux --arch amd64 \
+  --binary ./terraform-provider-example_v1.2.3
+
 tfreg push provider \
-  --namespace hashicorp \
-  --name aws \
-  --version 6.31.0 \
-  --file terraform-provider-aws_v6.31.0_x5
+  --namespace acme --name example --version 1.2.3 \
+  --os linux --arch amd64 \
+  --file ./terraform-provider-example_1.2.3_linux_amd64.zip
+```
 
-# Push a module
+Repeat the upload for each OS/architecture. The server assigns a canonical filename and computes the checksum.
+
+### Module
+
+```bash
+tfreg bundle module \
+  --namespace acme --name vpc --provider aws --version 1.2.3 \
+  --source ./modules/vpc
+
 tfreg push module \
-  --namespace example \
-  --name vpc \
-  --provider aws \
-  --version 1.0.0 \
-  --file module.tar.gz
+  --namespace acme --name vpc --provider aws --version 1.2.3 \
+  --file ./acme-vpc-aws-1.2.3.tar.gz
+```
 
-# List contents
+### Browse, pull, and delete
+
+```bash
 tfreg list providers
 tfreg list modules
-
-# Pull artifacts
-tfreg pull provider --namespace hashicorp --name aws --version 6.31.0
-tfreg pull module --namespace example --name vpc --provider aws --version 1.0.0
-
-# Bundle local files for later upload
-tfreg bundle provider --namespace hashicorp --name aws --version 6.31.0 \
-  --binary ./terraform-provider-aws
-
-# Delete a version
-tfreg delete provider --namespace hashicorp --name aws --version 6.31.0
-```
-
-### Using the API
-
-```bash
-# Upload a provider (multipart form)
-curl -X POST http://localhost:5000/api/v1/providers/hashicorp/aws/6.31.0/linux/amd64 \
-  -H "X-API-Key: <your-api-key>" \
-  -F "file=@terraform-provider-aws.zip"
-
-# Upload a module
-curl -X POST http://localhost:5000/api/v1/modules/example/vpc/aws/1.0.0 \
-  -H "X-API-Key: <your-api-key>" \
-  -F "file=@module.tar.gz"
-
-# List providers
-curl http://localhost:5000/api/v1/providers
-
-# List modules
-curl http://localhost:5000/api/v1/modules
-
-# Registry stats
-curl http://localhost:5000/api/v1/stats
+tfreg pull provider --namespace acme --name example --version 1.2.3
+tfreg pull module --namespace acme --name vpc --provider aws --version 1.2.3
+tfreg delete provider --namespace acme --name example --version 1.2.3
 ```
 
 ## Configure Terraform
 
-### Provider Network Mirror
+Use the service as a provider network mirror:
 
 ```hcl
 # ~/.terraformrc
 provider_installation {
   network_mirror {
-    url = "https://registry.example.com/"  # or http:// for local dev
+    url     = "https://registry.example.com/"
     include = ["*/*"]
   }
-}
-```
-
-### Use in Terraform Code
-
-```hcl
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "6.31.0"
-    }
+  direct {
+    exclude = ["*/*"]
   }
 }
+```
 
+Module source addresses use the registry hostname:
+
+```hcl
 module "vpc" {
-  source  = "example/vpc/aws"
-  version = "1.0.0"
+  source  = "registry.example.com/acme/vpc/aws"
+  version = "1.2.3"
 }
 ```
 
-## API Endpoints
+Private Terraform services require HTTPS outside local development.
 
-### Terraform Protocol (always public — no auth required)
+## Authentication
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /.well-known/terraform.json` | Protocol discovery |
-| `GET /v1/providers/{ns}/{type}/versions` | List provider versions |
-| `GET /v1/providers/{ns}/{type}/{ver}/download/{os}/{arch}` | Provider download metadata |
-| `GET /v1/modules/{ns}/{name}/{provider}/versions` | List module versions |
-| `GET /v1/modules/{ns}/{name}/{provider}/{ver}/download` | Download module version |
-| `GET /v1/modules/{ns}/{name}/{provider}/download` | Download latest module |
+Protocol, mirror, artifact download, health, metrics, UI, and management `GET` routes are public. Management mutations require either:
 
-### Management API (auth required for mutations)
+```text
+X-API-Key: <key>
+Authorization: Bearer <key>
+```
 
-| Endpoint | Method | Permission | Description |
-|----------|--------|------------|-------------|
-| `/api/v1/stats` | GET | — | Registry statistics |
-| `/api/v1/providers` | GET | — | List all providers |
-| `/api/v1/providers/{ns}/{name}` | GET | — | Provider details |
-| `/api/v1/providers/{ns}/{name}/{ver}/{os}/{arch}` | POST | write | Upload provider |
-| `/api/v1/providers/{ns}/{name}/{ver}` | DELETE | admin | Delete version |
-| `/api/v1/providers/{ns}/{name}/{ver}/deprecate` | POST | write | Deprecate version |
-| `/api/v1/modules` | GET | — | List all modules |
-| `/api/v1/modules/{ns}/{name}/{provider}` | GET | — | Module details |
-| `/api/v1/modules/{ns}/{name}/{provider}/{ver}` | POST | write | Upload module |
-| `/api/v1/modules/{ns}/{name}/{provider}/{ver}` | DELETE | admin | Delete version |
-| `/api/v1/modules/{ns}/{name}/{provider}/{ver}/deprecate` | POST | write | Deprecate version |
-| `/api/v1/gc` | POST | admin | Trigger garbage collection |
+API keys are stored as SHA-256 hashes in `${STORAGE_PATH}/keys.json` and hot-reload when the file changes. Plaintext keys are never written by the current server. Permission hierarchy:
 
-### Operations
+- `read`: authenticated reads (management reads are public by default)
+- `write`: uploads and deprecation
+- `admin`: write plus deletion and garbage collection
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health check (JSON) |
-| `GET /metrics` | Prometheus/JSON metrics |
-| `GET /ui` | Web dashboard |
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the file format and rotation procedure.
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `STORAGE_PATH` | `/var/lib/terraform-registry` | Filesystem storage root (mount PVC here) |
-| `BASE_URL` | `http://localhost:8080` | Public URL for download links |
+| Variable | Default | Purpose |
+|---|---:|---|
+| `STORAGE_PATH` | `/var/lib/terraform-registry` | Persistent filesystem root |
+| `BASE_URL` | `http://localhost:8080` | Public absolute URL used in download metadata |
 | `PORT` | `8080` | HTTP listen port |
-| `API_KEYS_FILE` | `{STORAGE_PATH}/keys.json` | API key file (auto-generated on first run) |
-| `AUDIT_LOG` | — | Path to audit log file |
-| `RATE_LIMIT` | `100` | Requests per window |
-| `RATE_WINDOW` | `1m` | Rate limit window duration |
-| `MAX_UPLOAD_MB` | `500` | Maximum upload size in MB |
-| `LOG_LEVEL` | `info` | Log level: `info` or `debug` |
-| `WEBHOOK_CONFIG` | — | Path to webhook configuration JSON |
+| `API_KEYS_FILE` | `${STORAGE_PATH}/keys.json` | Hashed RBAC key configuration |
+| `REGISTRY_API_KEY` | empty | Initial/deprecated single admin key bootstrap |
+| `MAX_UPLOAD_MB` | `500` | Maximum artifact size |
+| `RATE_LIMIT` | `100` | Per-client token-bucket capacity |
+| `RATE_WINDOW` | `1m` | Token-bucket refill window |
+| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` for rate limiting |
+| `AUDIT_LOG` | empty | Optional append-only JSONL audit file |
+| `LOG_LEVEL` | `info` | `info` or `debug` |
+| `WEBHOOK_CONFIG` | empty | Webhook JSON configuration file |
 
-## API Keys & RBAC
+Only enable `TRUST_PROXY_HEADERS` when the service is reachable exclusively through a trusted proxy that overwrites those headers.
 
-On first run, a `keys.json` file is auto-generated with a default admin key. Permissions:
+## Operations
 
-| Level | Capabilities |
-|-------|-------------|
-| `read` | All GET endpoints, Terraform protocol |
-| `write` | `read` + POST (upload artifacts, deprecate versions) |
-| `admin` | `write` + DELETE, garbage collection, key management |
+- `GET /health`: verifies the storage volume is writable
+- `GET /metrics`: JSON by default; Prometheus text when `Accept: text/plain`
+- `GET /ui`: embedded dashboard
+- SIGTERM/SIGINT: graceful shutdown with a 30-second deadline
 
-Terraform protocol endpoints are always public — `terraform init` works without authentication.
+Back up the entire storage volume. Restore it as a unit while the server is stopped. Filesystem storage is single-writer; use one replica.
 
-API keys can be passed via:
-- `X-API-Key` header
-- `Authorization: Bearer <key>` header
-- `?api_key=<key>` query parameter
-
-The `keys.json` file hot-reloads on change — no restart needed.
-
-## Webhooks
-
-Create a webhook config file and set `WEBHOOK_CONFIG` to its path:
-
-```json
-{
-  "webhooks": [
-    {
-      "url": "https://hooks.example.com/registry",
-      "secret": "optional-hmac-secret",
-      "events": ["publish", "delete", "deprecate"],
-      "enabled": true
-    }
-  ]
-}
-```
-
-Webhook payloads include event type, artifact kind, namespace, name, version, and timestamp.
-
-## Deployment
-
-### Kubernetes with PVC
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: terraform-registry
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: terraform-registry
-  template:
-    metadata:
-      labels:
-        app: terraform-registry
-    spec:
-      containers:
-        - name: registry
-          image: ghcr.io/brandencobb/terraform-registry:latest
-          ports:
-            - containerPort: 8080
-          env:
-            - name: BASE_URL
-              value: "https://registry.internal.example.com"
-            - name: API_KEYS_FILE
-              value: "/var/lib/terraform-registry/keys.json"
-          volumeMounts:
-            - mountPath: /var/lib/terraform-registry
-              name: registry-data
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-      volumes:
-        - name: registry-data
-          persistentVolumeClaim:
-            claimName: terraform-registry-data
-```
-
-### HTTPS with Reverse Proxy
-
-The registry serves HTTP. For HTTPS, place it behind a reverse proxy (Caddy, nginx, Traefik):
-
-```
-# Caddyfile
-registry.example.com {
-    reverse_proxy terraform-registry:8080
-}
-```
-
-## Building from Source
+## Development
 
 ```bash
-# Build server
-cd registry-server && go build -o terraform-registry .
-
-# Build CLI
-cd cmd/tfreg && go build -o tfreg .
-
-# Run tests
-cd registry-server && go test ./...
-
-# Docker
-docker build -t terraform-registry .
+make check
+make docker-build VERSION=dev
+docker compose config
 ```
 
-## Security
+The CI pipeline runs race tests, vet, vulnerability/security scans, a blocking container scan, and real container/CLI integration tests.
 
-- Runs as non-root user (`nobody`)
-- Atomic writes (temp file + rename)
-- Per-file mutex prevents concurrent corruption
-- Magic byte validation rejects non-archive uploads
-- Path traversal protection on download endpoint
-- RBAC API keys with per-user permissions
-- Structured audit logging
-- Graceful shutdown on SIGTERM/SIGINT
-- No embedded credentials or external calls
+Detailed references:
+
+- [`docs/API.md`](docs/API.md)
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- [`SECURITY.md`](SECURITY.md)
 
 ## License
 
-This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- Inspired by [Docker Registry](https://github.com/distribution/distribution)
-- Built for [Terraform](https://www.terraform.io/) by HashiCorp
-- Protocol documentation from [Terraform Registry Protocol](https://developer.hashicorp.com/terraform/internals/provider-registry-protocol)
+MIT — see [`LICENSE`](LICENSE).

@@ -1,4 +1,4 @@
-# Example Terraform configuration using providers from S3 registry
+# Example Terraform configuration using providers from the registry network mirror
 
 terraform {
   required_version = ">= 1.5.0"

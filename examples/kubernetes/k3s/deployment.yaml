@@ -10,7 +10,7 @@ spec:
   selector:
     matchLabels:
       app: terraform-registry
-  revisionHistoryLimit: 0
+  revisionHistoryLimit: 3
   strategy:
     type: Recreate
   template:
@@ -23,15 +23,18 @@ spec:
       securityContext:
         fsGroup: 65534
         runAsUser: 65534
+        runAsGroup: 65534
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
       - name: terraform-registry-data
         persistentVolumeClaim:
           claimName: terraform-registry-data
       containers:
       - name: registry
-        image: ghcr.io/brandencobb/terraform-registry:latest
-        imagePullPolicy: Always
+        image: ghcr.io/brandencobb/terraform-registry:v2.1.0
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
           name: http
@@ -41,6 +44,11 @@ spec:
           value: "8080"
         - name: BASE_URL
           value: "https://terraform-registry.internal.example.com"
+        - name: REGISTRY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: terraform-registry-bootstrap
+              key: api-key
         resources:
           requests:
             cpu: 100m
@@ -68,6 +76,7 @@ spec:
           readOnlyRootFilesystem: true
           runAsNonRoot: true
           runAsUser: 65534
+          runAsGroup: 65534
           capabilities:
             drop:
             - ALL

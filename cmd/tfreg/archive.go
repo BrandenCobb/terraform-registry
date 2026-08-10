@@ -4,108 +4,129 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 )
 
-// createZip creates a zip archive containing the given file
-func createZip(sourceFile, destPath string) error {
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+func createZip(sourceFile, destPath string) (err error) {
+	if err = os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return err
 	}
-
-	f, err := os.Create(destPath)
+	f, err := os.Create(destPath) // #nosec G304 -- destination is explicitly selected by the CLI user.
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
-
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(destPath)
+		}
+	}()
 	w := zip.NewWriter(f)
-	defer func() { _ = w.Close() }()
-
-	src, err := os.Open(sourceFile)
+	src, err := os.Open(sourceFile) // #nosec G304 -- source is explicitly selected by the CLI user.
 	if err != nil {
 		return err
 	}
-	defer func() { _ = src.Close() }()
-
 	info, err := src.Stat()
 	if err != nil {
+		_ = src.Close()
 		return err
 	}
-
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {
+		_ = src.Close()
 		return err
 	}
 	header.Method = zip.Deflate
-	// Use just the base filename in the archive
 	header.Name = filepath.Base(sourceFile)
-
 	writer, err := w.CreateHeader(header)
-	if err != nil {
-		return err
+	if err == nil {
+		_, err = io.Copy(writer, src)
 	}
-
-	_, err = io.Copy(writer, src)
+	if closeErr := src.Close(); err == nil {
+		err = closeErr
+	}
+	if closeErr := w.Close(); err == nil {
+		err = closeErr
+	}
 	return err
 }
 
-// createTarGz creates a tar.gz archive from a source directory
-func createTarGz(sourceDir, destPath string) error {
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+func createTarGz(sourceDir, destPath string) (err error) {
+	if err = os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return err
 	}
-
-	f, err := os.Create(destPath)
+	destAbs, err := filepath.Abs(destPath)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
-
+	f, err := os.Create(destPath) // #nosec G304 -- destination is explicitly selected by the CLI user.
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(destPath)
+		}
+	}()
 	gw := gzip.NewWriter(f)
-	defer func() { _ = gw.Close() }()
-
 	tw := tar.NewWriter(gw)
-	defer func() { _ = tw.Close() }()
 
-	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-
-		// Get the relative path
-		relPath, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return err
+		pathAbs, absErr := filepath.Abs(path)
+		if absErr != nil {
+			return absErr
 		}
-
+		if pathAbs == destAbs {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic links are not supported in module bundles: %s", path)
+		}
+		relPath, relErr := filepath.Rel(sourceDir, path)
+		if relErr != nil {
+			return relErr
+		}
 		if relPath == "." {
 			return nil
 		}
-
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
+		header, headerErr := tar.FileInfoHeader(info, "")
+		if headerErr != nil {
+			return headerErr
 		}
-		header.Name = relPath
-
-		if err := tw.WriteHeader(header); err != nil {
-			return err
+		header.Name = filepath.ToSlash(relPath)
+		if headerErr = tw.WriteHeader(header); headerErr != nil {
+			return headerErr
 		}
-
-		if info.IsDir() {
+		if !info.Mode().IsRegular() {
 			return nil
 		}
-
-		file, err := os.Open(path)
-		if err != nil {
-			return err
+		file, openErr := os.Open(path) // #nosec G122,G304 -- Walk rejects symlinks; user-selected source is not a security boundary.
+		if openErr != nil {
+			return openErr
 		}
-		defer func() { _ = file.Close() }()
-
-		_, err = io.Copy(tw, file)
-		return err
+		_, copyErr := io.Copy(tw, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
+	if closeErr := tw.Close(); err == nil {
+		err = closeErr
+	}
+	if closeErr := gw.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }

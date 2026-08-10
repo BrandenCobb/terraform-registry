@@ -2,333 +2,119 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: read
   security-events: write
 
 jobs:
-  lint:
-    name: Lint
+  lint-test-build:
+    name: Lint, Test, Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
-          cache-dependency-path: registry-server/go.sum
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.0
-          working-directory: registry-server
-          args: --timeout=5m
-
-      - name: Check Go formatting
+          go-version: '1.26.5'
+          cache-dependency-path: |
+            registry-server/go.sum
+            cmd/tfreg/go.mod
+      - name: Formatting
+        run: test -z "$(gofmt -s -l registry-server cmd/tfreg)"
+      - name: Server checks
         working-directory: registry-server
-        run: |
-          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-            echo "Go files not formatted:"
-            gofmt -s -l .
-            exit 1
-          fi
-
+        run: go vet ./... && go test -race -coverprofile=coverage.out -covermode=atomic ./... && go build -trimpath .
+      - name: CLI checks
+        working-directory: cmd/tfreg
+        run: go vet ./... && go test -race ./... && go build -trimpath .
+      - name: Makefile build
+        run: make build VERSION=ci
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@00b27aa7cb85167568cb48a3838b75f4265f2bca
         with:
           scandir: './scripts'
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: registry-server/go.sum
-
-      - name: Download dependencies
-        working-directory: registry-server
-        run: go mod download
-
-      - name: Run unit tests
-        working-directory: registry-server
-        run: go test -v -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v7
-        if: github.event_name == 'push'
-        with:
-          files: ./registry-server/coverage.out
-          flags: unittests
-          name: codecov-umbrella
-
   security:
-    name: Security Scanning
+    name: Security
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26'
+          go-version: '1.26.5'
           cache-dependency-path: registry-server/go.sum
-
-      - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
-        with:
-          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
-
-      - name: Upload Gosec results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: gosec-results.sarif
-
-      - name: Run govulncheck
-        working-directory: registry-server
+      - name: Vulnerability scan
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          (cd registry-server && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd cmd/tfreg && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+      - name: Gosec
+        run: |
+          (cd registry-server && go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 ./...)
+          (cd cmd/tfreg && go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 ./...)
 
-  build:
-    name: Build
+  docker-integration:
+    name: Docker and Integration
     runs-on: ubuntu-latest
+    needs: lint-test-build
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache-dependency-path: registry-server/go.sum
-
-      - name: Build binary
-        working-directory: registry-server
-        run: |
-          CGO_ENABLED=0 go build -v \
-            -ldflags="-w -s" \
-            -o terraform-registry \
-            .
-
-      - name: Build CLI tool
-        working-directory: cmd/tfreg
-        run: |
-          CGO_ENABLED=0 go build -v \
-            -ldflags="-w -s" \
-            -o tfreg \
-            .
-
-      - name: Test binary
-        working-directory: registry-server
-        run: |
-          ./terraform-registry --version || echo "Binary built successfully"
-
-  docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          file: ./Dockerfile
-          tags: terraform-registry:test
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           load: true
-
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+          tags: terraform-registry:test
+          build-args: VERSION=ci
+      - name: Scan image
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         with:
           image-ref: terraform-registry:test
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-      - name: Run Trivy vulnerability scanner (table output)
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: terraform-registry:test
-          format: 'table'
-          exit-code: '0'
-          severity: 'CRITICAL,HIGH'
-
-  integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: [build, docker]
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          tags: terraform-registry:test
-          load: true
-
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
       - name: Start registry
         run: |
-          # Create test-data directory with proper permissions
-          mkdir -p test-data
-          chmod 777 test-data
-
-          docker run -d \
-            --name terraform-registry \
-            -p 5000:8080 \
-            --user $(id -u):$(id -g) \
-            -v $(pwd)/test-data:/var/lib/terraform-registry \
+          docker volume create terraform-registry-test-data
+          docker run -d --name terraform-registry -p 5000:8080 \
+            -v terraform-registry-test-data:/var/lib/terraform-registry \
             -e BASE_URL=http://localhost:5000 \
-            -e API_KEYS_FILE=/tmp/keys.json \
-            terraform-registry:test
-
-          # Wait for registry to be ready
-          timeout 30 bash -c 'until curl -f http://localhost:5000/health; do sleep 1; done'
-
-          sleep 1
-
-      - name: Test well-known endpoint
+            -e REGISTRY_API_KEY=integration-secret \
+            -e RATE_LIMIT=10000 terraform-registry:test
+          timeout 30 bash -c 'until curl -fsS http://localhost:5000/health; do sleep 1; done'
+      - name: End-to-end API and CLI
         run: |
-          curl -f http://localhost:5000/.well-known/terraform.json
-          curl -s http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1"'
+          printf '#!/bin/sh\nexit 0\n' > terraform-provider-example_v1.0.0
+          chmod +x terraform-provider-example_v1.0.0
+          zip provider.zip terraform-provider-example_v1.0.0
+          mkdir module && printf 'variable "name" { type = string }\n' > module/main.tf
+          tar czf module.tar.gz -C module .
 
-      - name: Check registry logs
+          docker cp provider.zip terraform-registry:/tmp/provider.zip
+          docker cp module.tar.gz terraform-registry:/tmp/module.tar.gz
+          docker exec -e TFREG_REGISTRY=http://localhost:8080 -e TFREG_API_KEY=integration-secret terraform-registry \
+            tfreg push provider --namespace test --name example --version 1.0.0 --file /tmp/provider.zip
+          docker exec -e TFREG_REGISTRY=http://localhost:8080 -e TFREG_API_KEY=integration-secret terraform-registry \
+            tfreg push module --namespace test --name vpc --provider aws --version 1.0.0 --file /tmp/module.tar.gz
+          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry tfreg list providers
+          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry tfreg list modules
+          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry \
+            tfreg pull provider --namespace test --name example --version 1.0.0 --output /tmp
+          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry \
+            tfreg pull module --namespace test --name vpc --provider aws --version 1.0.0 --output /tmp
+
+          curl -fsS http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1" and ."modules.v1"'
+          curl -fsS http://localhost:5000/v1/modules/test/vpc/aws/versions | jq -e '.modules[0].versions[0].version == "1.0.0"'
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE http://localhost:5000/api/v1/providers/test/example/1.0.0)" = 401
+          curl -fsS http://localhost:5000/ui | grep -q 'Terraform Registry'
+          curl -fsS -H 'Accept: text/plain' http://localhost:5000/metrics | grep -q terraform_registry_requests_total
+      - name: Logs
         if: always()
-        run: docker logs terraform-registry
-
-      - name: Upload and test provider
-        run: |
-          # Create dummy provider binary and metadata
-          mkdir -p test-data/providers/test/example/1.0.0
-
-          # Create index.json (simple version array)
-          cat > test-data/providers/test/example/index.json <<'EOF'
-          {
-            "versions": ["1.0.0"]
-          }
-          EOF
-
-          # Create dummy provider binary
-          echo "dummy provider binary" > test-data/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip
-
-          # Calculate checksum
-          SHASUM=$(sha256sum test-data/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip | cut -d' ' -f1)
-
-          # Create platform metadata
-          cat > test-data/providers/test/example/1.0.0/linux_amd64.json <<EOF
-          {
-            "protocols": ["5.0"],
-            "os": "linux",
-            "arch": "amd64",
-            "filename": "terraform-provider-example_v1.0.0_linux_amd64.zip",
-            "download_url": "http://localhost:5000/download/providers/test/example/1.0.0/terraform-provider-example_v1.0.0_linux_amd64.zip",
-            "shasum": "$SHASUM",
-            "signing_keys": {
-              "gpg_public_keys": []
-            }
-          }
-          EOF
-
-          # Verify files were created
-          ls -laR test-data/
-
-          # Wait a moment for filesystem sync
-          sleep 1
-
-          # Check logs before test
-          echo "=== Registry logs before provider test ==="
-          docker logs terraform-registry
-
-          # Test provider endpoint
-          echo "=== Testing provider versions endpoint ==="
-          curl -v http://localhost:5000/v1/providers/test/example/versions || true
-
-          # Check if it returns valid JSON with version
-          RESULT=$(curl -s http://localhost:5000/v1/providers/test/example/versions)
-          echo "Response: $RESULT"
-          echo "$RESULT" | jq -e '.versions[0].version == "1.0.0"'
-
-      - name: Test management API
-        run: |
-          # Test stats endpoint
-          curl -s http://localhost:5000/api/v1/stats | jq -e '.success == true'
-
-          # Test list providers
-          curl -s http://localhost:5000/api/v1/providers | jq -e '.success == true'
-
-          # Test upload via API
-          echo "test module content" | gzip > /tmp/test-module.tar.gz
-          curl -s -X POST http://localhost:5000/api/v1/modules/test/vpc/aws/1.0.0 \
-            -F "file=@/tmp/test-module.tar.gz" | jq -e '.success == true'
-
-          # Test list modules
-          curl -s http://localhost:5000/api/v1/modules | jq -e '.success == true'
-          curl -s http://localhost:5000/api/v1/modules | jq -e '.data | length > 0'
-
-      - name: Test web UI
-        run: |
-          curl -s http://localhost:5000/ui | grep -q "Terraform Registry"
-
-      - name: Upload and test module
-        run: |
-          # Create dummy module
-          mkdir -p test-data/modules/test/vpc/aws/1.0.0
-
-          # Create module tarball
-          mkdir -p temp-module
-          cat > temp-module/main.tf <<'EOF'
-          variable "test" {
-            type = string
-          }
-          output "test" {
-            value = var.test
-          }
-          EOF
-
-          tar czf test-data/modules/test/vpc/aws/1.0.0/module.tar.gz -C temp-module .
-          rm -rf temp-module
-
-          # Create module index (simple version array)
-          cat > test-data/modules/test/vpc/aws/index.json <<'EOF'
-          {
-            "versions": ["1.0.0"]
-          }
-          EOF
-
-          # Test module endpoints
-          curl -f http://localhost:5000/v1/modules/test/vpc/aws/versions
-          curl -s http://localhost:5000/v1/modules/test/vpc/aws/versions | jq -e '.modules[0].version == "1.0.0"'
-
-      - name: Show logs on failure
-        if: failure()
-        run: docker logs terraform-registry
-
+        run: docker logs terraform-registry || true
       - name: Cleanup
         if: always()
-        run: docker stop terraform-registry || true
+        run: docker rm -f terraform-registry || true

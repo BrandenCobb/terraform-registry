@@ -29,6 +29,12 @@ func setupTestEnv(t *testing.T) (*mux.Router, *Store, string) {
 	// Set globals
 	store = s
 	logger = testLogger
+	if signer == nil {
+		signer, err = NewRegistrySigner(tmpDir + "/signing-key.asc")
+		if err != nil {
+			t.Fatalf("new signer: %v", err)
+		}
+	}
 	metrics = NewMetrics()
 	webhooks = NewWebhookManager("", testLogger)
 
@@ -110,6 +116,7 @@ func TestProviderVersions(t *testing.T) {
 	meta := PlatformMeta{OS: "linux", Arch: "amd64", Filename: "terraform-provider-aws_6.31.0_linux_amd64.zip", Shasum: "abc123", Protocols: []string{"5.0"}}
 	metaData, _ := json.Marshal(meta)
 	_ = s.Put("providers/hashicorp/aws/6.31.0/linux_amd64.json", metaData)
+	_ = s.Put("providers/hashicorp/aws/6.31.0/"+meta.Filename, []byte("artifact"))
 
 	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/versions", nil)
 	w := httptest.NewRecorder()
@@ -149,6 +156,9 @@ func TestProviderDownload(t *testing.T) {
 	metaData, _ := json.Marshal(meta)
 	_ = s.Put("providers/hashicorp/aws/6.31.0/linux_amd64.json", metaData)
 	_ = s.Put("providers/hashicorp/aws/6.31.0/terraform-provider-aws_6.31.0_linux_amd64.zip", []byte("fake"))
+	if err := rebuildProviderChecksums("hashicorp", "aws", "6.31.0"); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("GET", "/v1/providers/hashicorp/aws/6.31.0/download/linux/amd64", nil)
 	w := httptest.NewRecorder()
@@ -164,8 +174,11 @@ func TestProviderDownload(t *testing.T) {
 	if resp.Shasum != "abc123" {
 		t.Errorf("expected shasum abc123, got %s", resp.Shasum)
 	}
-	if resp.DownloadURL == "" {
-		t.Error("expected download URL")
+	if resp.DownloadURL == "" || resp.ShasumsURL == "" || resp.ShasumsSignatureURL == "" {
+		t.Errorf("expected artifact and integrity URLs: %+v", resp)
+	}
+	if len(resp.SigningKeys.GPGPublicKeys) != 1 || resp.SigningKeys.GPGPublicKeys[0].ASCIIArmor == "" {
+		t.Errorf("expected registry signing key: %+v", resp.SigningKeys)
 	}
 }
 
@@ -187,6 +200,7 @@ func TestModuleVersions(t *testing.T) {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	_ = s.AddModuleVersion("example", "vpc", "aws", "1.0.0")
+	_ = s.Put("modules/example/vpc/aws/1.0.0/module.tar.gz", []byte("artifact"))
 
 	req := httptest.NewRequest("GET", "/v1/modules/example/vpc/aws/versions", nil)
 	w := httptest.NewRecorder()
@@ -199,7 +213,7 @@ func TestModuleVersions(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(resp.Modules) != 1 || resp.Modules[0].Version != "1.0.0" {
+	if len(resp.Modules) != 1 || len(resp.Modules[0].Versions) != 1 || resp.Modules[0].Versions[0].Version != "1.0.0" {
 		t.Errorf("unexpected: %+v", resp.Modules)
 	}
 }
@@ -236,8 +250,8 @@ func TestModuleLatestDownload(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
 	}
 	if w.Header().Get("X-Terraform-Get") == "" {
 		t.Error("expected X-Terraform-Get header")
@@ -248,9 +262,10 @@ func TestFileDownload(t *testing.T) {
 	r, s, tmpDir := setupTestEnv(t)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	_ = s.Put("test/file.zip", []byte("fake zip"))
+	key := "providers/acme/example/1.0.0/terraform-provider-example_1.0.0_linux_amd64.zip"
+	_ = s.Put(key, []byte("fake zip"))
 
-	req := httptest.NewRequest("GET", "/download/test/file.zip", nil)
+	req := httptest.NewRequest("GET", "/download/"+key, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

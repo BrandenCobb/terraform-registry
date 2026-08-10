@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -51,7 +54,7 @@ func NewWebhookManager(configPath string, logger *slog.Logger) *WebhookManager {
 }
 
 func (wm *WebhookManager) loadConfig(path string) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured webhook file path is intentional.
 	if err != nil {
 		if !os.IsNotExist(err) {
 			wm.logger.Warn("failed to load webhook config", "error", err)
@@ -108,7 +111,9 @@ func (wm *WebhookManager) Notify(event string, payload WebhookPayload) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Registry-Event", event)
 			if wh.Secret != "" {
-				sig := sha256Hex(append([]byte(wh.Secret), body...))
+				mac := hmac.New(sha256.New, []byte(wh.Secret))
+				_, _ = mac.Write(body)
+				sig := hex.EncodeToString(mac.Sum(nil))
 				req.Header.Set("X-Registry-Signature", fmt.Sprintf("sha256=%s", sig))
 			}
 

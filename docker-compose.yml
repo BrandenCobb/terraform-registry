@@ -1,43 +1,38 @@
-# Terraform Registry - Quick Start Docker Compose
-#
-# Usage:
-#   docker-compose up -d              # Start registry
-#   docker-compose logs -f            # View logs
-#   docker-compose down               # Stop registry
-#
-# Registry will be available at: http://localhost:5000
-# Web UI at: http://localhost:5000/ui
-#
-# Optional: Set REGISTRY_API_KEY to require auth for management operations
-#
-# For more examples, see:
-#   - examples/docker-compose/        Full examples (filesystem + S3)
-#   - examples/kubernetes/            Kubernetes deployment
-#   - examples/s3/                    Production S3 setup
-
-version: '3.8'
-
 services:
   terraform-registry:
+    image: ghcr.io/brandencobb/terraform-registry:v2.1.0
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/brandencobb/terraform-registry:latest
-    container_name: terraform-registry
+      args:
+        VERSION: v2.1.0
     ports:
-      - "5000:8080"
+      - "${REGISTRY_BIND:-127.0.0.1}:${REGISTRY_PORT:-5000}:8080"
     volumes:
-      - ./data:/var/lib/terraform-registry
+      - registry-data:/var/lib/terraform-registry
     environment:
-      STORAGE_TYPE: filesystem
-      BASE_URL: http://localhost:5000
-      PORT: 8080
-      # Uncomment and set to require API key for management operations:
-      # REGISTRY_API_KEY: "your-secret-key"
+      BASE_URL: "${BASE_URL:-http://localhost:5000}"
+      PORT: "8080"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      RATE_LIMIT: "${RATE_LIMIT:-100}"
+      RATE_WINDOW: "${RATE_WINDOW:-1m}"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-500}"
+      REGISTRY_API_KEY: "${REGISTRY_API_KEY:-}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-false}"
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  registry-data:

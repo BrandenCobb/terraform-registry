@@ -57,7 +57,7 @@
             return;
         }
         container.innerHTML = resp.data.map(p => `
-            <div class="artifact-card" onclick="showProviderDetail('${p.namespace}','${p.name}')">
+            <div class="artifact-card" data-kind="provider" data-namespace="${p.namespace}" data-name="${p.name}">
                 <div>
                     <div class="artifact-name">${p.namespace}/${p.name}</div>
                     <div class="artifact-meta">${p.versions ? p.versions.length : 0} version(s)</div>
@@ -65,6 +65,9 @@
                 <div>${(p.versions || []).slice(-3).map(v => `<span class="version-badge">${v.version}</span>`).join('')}</div>
             </div>
         `).join('');
+        container.querySelectorAll('[data-kind="provider"]').forEach(card => {
+            card.addEventListener('click', () => showProviderDetail(card.dataset.namespace, card.dataset.name));
+        });
     }
 
     // Modules
@@ -77,7 +80,7 @@
             return;
         }
         container.innerHTML = resp.data.map(m => `
-            <div class="artifact-card" onclick="showModuleDetail('${m.namespace}','${m.name}','${m.provider}')">
+            <div class="artifact-card" data-kind="module" data-namespace="${m.namespace}" data-name="${m.name}" data-provider="${m.provider}">
                 <div>
                     <div class="artifact-name">${m.namespace}/${m.name}/${m.provider}</div>
                     <div class="artifact-meta">${m.versions ? m.versions.length : 0} version(s)</div>
@@ -85,6 +88,9 @@
                 <div>${(m.versions || []).slice(-3).map(v => `<span class="version-badge">${v.version}</span>`).join('')}</div>
             </div>
         `).join('');
+        container.querySelectorAll('[data-kind="module"]').forEach(card => {
+            card.addEventListener('click', () => showModuleDetail(card.dataset.namespace, card.dataset.name, card.dataset.provider));
+        });
     }
 
     // Provider detail modal
@@ -106,11 +112,14 @@
                         <div class="platform-list">
                             ${(v.platforms || []).map(pl => `<span class="platform-badge">${pl.os}/${pl.arch}</span>`).join('')}
                         </div>
-                        <button class="btn btn-danger" onclick="deleteProvider('${namespace}','${name}','${v.version}')">Delete</button>
+                        <button class="btn btn-danger delete-provider" data-version="${v.version}">Delete</button>
                     </div>
                 `).join('')}
             </div>
         `;
+        body.querySelectorAll('.delete-provider').forEach(button => {
+            button.addEventListener('click', () => deleteProvider(namespace, name, button.dataset.version));
+        });
         document.getElementById('detail-modal').style.display = 'flex';
     };
 
@@ -130,11 +139,14 @@
                 ${m.versions.map(v => `
                     <div class="version-item">
                         <span class="version-badge" style="font-size:0.9rem">${v.version}</span>
-                        <button class="btn btn-danger" onclick="deleteModule('${namespace}','${name}','${provider}','${v.version}')">Delete</button>
+                        <button class="btn btn-danger delete-module" data-version="${v.version}">Delete</button>
                     </div>
                 `).join('')}
             </div>
         `;
+        body.querySelectorAll('.delete-module').forEach(button => {
+            button.addEventListener('click', () => deleteModule(namespace, name, provider, button.dataset.version));
+        });
         document.getElementById('detail-modal').style.display = 'flex';
     };
 
@@ -231,6 +243,9 @@
     };
 
     // Initial load
+    document.getElementById('upload-type').addEventListener('change', toggleUploadFields);
+    document.getElementById('upload-button').addEventListener('click', doUpload);
+    document.getElementById('modal-close').addEventListener('click', closeModal);
     loadStats();
 
     // Close modal on outside click

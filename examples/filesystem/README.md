@@ -1,116 +1,75 @@
 # Filesystem Storage Example
 
-This example shows how to run the registry with filesystem storage for local development.
+The registry stores all provider and module data on a local filesystem. Run one
+registry process (single writer) per data volume.
 
-## Setup
-
-### 1. Start the Registry
+## Start the registry
 
 ```bash
+docker volume create terraform-registry-data
 docker run -d \
   --name terraform-registry \
-  -p 5000:8080 \
-  -v $(pwd)/registry-data:/var/lib/terraform-registry \
-  -e STORAGE_TYPE=filesystem \
+  -p 127.0.0.1:5000:8080 \
+  -v terraform-registry-data:/var/lib/terraform-registry \
   -e BASE_URL=http://localhost:5000 \
-  ghcr.io/brandencobb/terraform-registry:latest
+  -e REGISTRY_API_KEY='replace-with-a-long-random-secret' \
+  --read-only \
+  --tmpfs /tmp:size=64m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  ghcr.io/brandencobb/terraform-registry:v2.1.0
 ```
 
-### 2. Configure Terraform
+The image runs as UID/GID 65534. A named volume is recommended because Docker
+initializes it with the image's writable storage ownership.
 
-Create `~/.terraformrc`:
+## Upload and download artifacts
+
+Install `tfreg` from the matching release archive, then configure it:
+
+```bash
+export TFREG_REGISTRY=http://localhost:5000
+export TFREG_API_KEY='replace-with-a-long-random-secret'
+
+tfreg push provider \
+  --namespace hashicorp \
+  --name random \
+  --version 3.5.1 \
+  --file terraform-provider-random_3.5.1_linux_amd64.zip
+
+tfreg list providers
+```
+
+Use `tfreg push module`, `tfreg pull provider`, and `tfreg pull module` for the
+corresponding operations. Run `tfreg help` for complete usage.
+
+## Terraform network mirror
+
+Terraform requires an **HTTPS** URL for a network mirror, including local use.
+Put the registry behind a TLS reverse proxy and set `BASE_URL` to that external
+HTTPS origin before configuring Terraform:
 
 ```hcl
 provider_installation {
   network_mirror {
-    url = "http://localhost:5000"
+    url = "https://registry.example.com/"
   }
 }
 ```
 
-### 3. Upload a Provider
+See [`../../docs/HTTPS.md`](../../docs/HTTPS.md) and
+[`../../docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md).
+
+## Backups
+
+Back up the complete Docker volume while the registry is stopped, or use a
+filesystem snapshot that captures the volume atomically. Restore the entire
+volume as a unit, including `signing-key.asc` and `api-keys.json` if those files
+are stored there.
+
+## Clean up
 
 ```bash
-# Download upload script
-curl -O https://raw.githubusercontent.com/BrandenCobb/terraform-registry/main/scripts/upload-provider.sh
-chmod +x upload-provider.sh
-
-# Upload provider
-./upload-provider.sh \
-  --storage filesystem \
-  --path ./registry-data \
-  --namespace hashicorp \
-  --name random \
-  --version 3.5.1 \
-  --binary ./terraform-provider-random_v3.5.1_x5 \
-  --os linux \
-  --arch amd64
-```
-
-### 4. Use in Terraform
-
-Create `main.tf`:
-
-```hcl
-terraform {
-  required_providers {
-    random = {
-      source  = "hashicorp/random"
-      version = "3.5.1"
-    }
-  }
-}
-
-resource "random_string" "example" {
-  length  = 16
-  special = false
-}
-
-output "random_string" {
-  value = random_string.example.result
-}
-```
-
-Run:
-
-```bash
-terraform init
-terraform apply
-```
-
-## Directory Structure
-
-After uploading a provider, your `registry-data/` directory will look like:
-
-```
-registry-data/
-├── providers/
-│   └── hashicorp/
-│       └── random/
-│           ├── index.json
-│           └── 3.5.1/
-│               ├── linux_amd64.json
-│               └── terraform-provider-random_v3.5.1_linux_amd64.zip
-└── modules/
-```
-
-## Advantages
-
-- ✅ Simple setup
-- ✅ No cloud dependencies
-- ✅ Easy to inspect registry contents
-- ✅ Fast for local development
-
-## Limitations
-
-- ⚠️ Single host only (not suitable for multi-node)
-- ⚠️ No built-in backups
-- ⚠️ Manual volume management
-
-## Clean Up
-
-```bash
-docker stop terraform-registry
-docker rm terraform-registry
-rm -rf registry-data
+docker rm -f terraform-registry
+docker volume rm terraform-registry-data
 ```

@@ -18,13 +18,17 @@ updates:
       - "BrandenCobb"
     assignees:
       - "BrandenCobb"
-    # Group minor and patch updates together
     groups:
-      aws-sdk:
-        patterns:
-          - "github.com/aws/aws-sdk-go-v2*"
       development:
         dependency-type: "development"
+
+  - package-ecosystem: "gomod"
+    directory: "/cmd/tfreg"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    labels: ["dependencies", "go"]
 
   # Enable version updates for GitHub Actions
   - package-ecosystem: "github-actions"
@@ -47,7 +51,7 @@ updates:
 
   # Enable version updates for Docker
   - package-ecosystem: "docker"
-    directory: "/registry-server"
+    directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"

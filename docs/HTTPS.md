@@ -101,7 +101,7 @@ services:
       BASE_URL: https://registry.local
 
   caddy:
-    image: caddy:latest
+    image: caddy:2.10.2-alpine
     container_name: terraform-registry-proxy
     ports:
       - "443:443"

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -15,25 +16,27 @@ import (
 
 // RateLimiter implements per-IP rate limiting using a token bucket.
 type RateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*visitor
-	rate     int           // requests per window
-	window   time.Duration // time window
-	logger   *slog.Logger
+	mu         sync.Mutex
+	visitors   map[string]*visitor
+	rate       int           // requests per window
+	window     time.Duration // time window
+	trustProxy bool
+	logger     *slog.Logger
 }
 
 type visitor struct {
-	tokens   int
+	tokens   float64
 	lastSeen time.Time
 }
 
 // NewRateLimiter creates a rate limiter allowing `rate` requests per `window`.
 func NewRateLimiter(rate int, window time.Duration, logger *slog.Logger) *RateLimiter {
 	rl := &RateLimiter{
-		visitors: make(map[string]*visitor),
-		rate:     rate,
-		window:   window,
-		logger:   logger,
+		visitors:   make(map[string]*visitor),
+		rate:       rate,
+		window:     window,
+		logger:     logger,
+		trustProxy: strings.EqualFold(os.Getenv("TRUST_PROXY_HEADERS"), "true"),
 	}
 	// Cleanup stale entries every minute
 	go func() {
@@ -61,7 +64,7 @@ func (rl *RateLimiter) allow(ip string) bool {
 
 	v, exists := rl.visitors[ip]
 	if !exists {
-		rl.visitors[ip] = &visitor{tokens: rl.rate - 1, lastSeen: time.Now()}
+		rl.visitors[ip] = &visitor{tokens: float64(rl.rate - 1), lastSeen: time.Now()}
 		return true
 	}
 
@@ -69,13 +72,13 @@ func (rl *RateLimiter) allow(ip string) bool {
 	v.lastSeen = time.Now()
 
 	// Refill tokens based on elapsed time
-	refill := int(elapsed.Seconds() * float64(rl.rate) / rl.window.Seconds())
+	refill := elapsed.Seconds() * float64(rl.rate) / rl.window.Seconds()
 	v.tokens += refill
-	if v.tokens > rl.rate {
-		v.tokens = rl.rate
+	if v.tokens > float64(rl.rate) {
+		v.tokens = float64(rl.rate)
 	}
 
-	if v.tokens <= 0 {
+	if v.tokens < 1 {
 		return false
 	}
 	v.tokens--
@@ -86,16 +89,29 @@ func (rl *RateLimiter) allow(ip string) bool {
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			ip = strings.Split(xff, ",")[0]
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ip = host
 		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			ip = xri
+		if rl.trustProxy {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				ip = strings.Split(xff, ",")[0]
+			}
+			if xri := r.Header.Get("X-Real-IP"); xri != "" {
+				ip = xri
+			}
 		}
 
 		if !rl.allow(ip) {
+			if metrics != nil {
+				metrics.RateLimitHits.Add(1)
+			}
 			rl.logger.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
-			http.Error(w, `{"success":false,"message":"Rate limit exceeded"}`, http.StatusTooManyRequests)
+			retryAfter := int(rl.window.Seconds())
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+			httpJSONError(w, http.StatusTooManyRequests, "Rate limit exceeded")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -116,7 +132,7 @@ type AuditLog struct {
 func NewAuditLog(path string, logger *slog.Logger) (*AuditLog, error) {
 	al := &AuditLog{logger: logger}
 	if path != "" {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304 -- operator-configured log path is intentional.
 		if err != nil {
 			return nil, fmt.Errorf("open audit log: %w", err)
 		}
@@ -198,6 +214,10 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // --- Upload Validator ---
 
 // maxUploadSize is the configurable maximum upload size in bytes.
@@ -207,7 +227,7 @@ var maxUploadSize int64 = 500 * 1024 * 1024 // 500MB default
 func SetMaxUploadSize() {
 	if s := os.Getenv("MAX_UPLOAD_MB"); s != "" {
 		var mb int
-		if _, err := fmt.Sscanf(s, "%d", &mb); err == nil && mb > 0 {
+		if _, err := fmt.Sscanf(s, "%d", &mb); err == nil && mb > 0 && mb <= 10240 {
 			maxUploadSize = int64(mb) * 1024 * 1024
 		}
 	}

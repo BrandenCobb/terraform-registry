@@ -79,7 +79,7 @@ provider_installation {
             <div class="upload-form-container">
                 <div class="form-group">
                     <label>Type</label>
-                    <select id="upload-type" onchange="toggleUploadFields()">
+                    <select id="upload-type">
                         <option value="provider">Provider</option>
                         <option value="module">Module</option>
                     </select>
@@ -135,7 +135,7 @@ provider_installation {
                     <input type="password" id="upload-apikey" placeholder="Registry API key">
                 </div>
 
-                <button class="btn btn-primary" onclick="doUpload()">Upload</button>
+                <button id="upload-button" class="btn btn-primary">Upload</button>
                 <div id="upload-result" class="result-box" style="display:none"></div>
             </div>
         </section>
@@ -144,7 +144,7 @@ provider_installation {
     <!-- Detail modal -->
     <div id="detail-modal" class="modal" style="display:none">
         <div class="modal-content">
-            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <button id="modal-close" class="modal-close" type="button" aria-label="Close">&times;</button>
             <div id="modal-body"></div>
         </div>
     </div>

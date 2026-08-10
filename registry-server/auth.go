@@ -1,12 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -23,11 +26,11 @@ const (
 
 // APIKey represents a registered API key.
 type APIKey struct {
-	Key         string     `json:"key"`        // The actual key (hashed below for storage)
-	Hash        string     `json:"hash"`       // SHA256 hash for comparison
-	Name        string     `json:"name"`       // Human-readable name
-	Permission  Permission `json:"permission"` // read, write, or admin
-	Enabled     bool       `json:"enabled"`    // Can be disabled without deletion
+	Key         string     `json:"key,omitempty"` // Legacy input only; cleared before persistence
+	Hash        string     `json:"hash"`          // SHA256 hash for comparison
+	Name        string     `json:"name"`          // Human-readable name
+	Permission  Permission `json:"permission"`    // read, write, or admin
+	Enabled     bool       `json:"enabled"`       // Can be disabled without deletion
 	CreatedAt   time.Time  `json:"created_at"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 	Description string     `json:"description,omitempty"`
@@ -58,13 +61,20 @@ func NewKeyStore(path string, logger *slog.Logger) (*KeyStore, error) {
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// Generate default admin key
-		defaultKey := generateRandomKey(32)
+		defaultKey := os.Getenv("REGISTRY_API_KEY")
+		generated := defaultKey == ""
+		if generated {
+			defaultKey = generateRandomKey(32)
+		}
 		if err := ks.createDefaultFile(path, defaultKey); err != nil {
 			return nil, fmt.Errorf("create default keys file: %w", err)
 		}
-		logger.Info("Created default API key", "key", defaultKey, "permission", "admin")
-		fmt.Fprintf(os.Stderr, "\n=== DEFAULT API KEY (save this!) ===\n%s\n====================================\n\n", defaultKey)
+		if generated {
+			logger.Info("created default admin API key")
+			fmt.Fprintf(os.Stderr, "\n=== DEFAULT API KEY (save this!) ===\n%s\n====================================\n\n", defaultKey)
+		} else {
+			logger.Warn("REGISTRY_API_KEY is deprecated; migrate to API_KEYS_FILE")
+		}
 	}
 
 	if err := ks.reload(); err != nil {
@@ -105,7 +115,7 @@ func (ks *KeyStore) Validate(key string) *APIKey {
 func (ks *KeyStore) HasPermission(key string, required Permission) bool {
 	ak := ks.Validate(key)
 	if ak == nil {
-		return !ks.HasKeys() // No keys configured = open access
+		return false
 	}
 	switch required {
 	case PermRead:
@@ -135,14 +145,9 @@ func authMiddleware(keyStore *KeyStore, logger *slog.Logger) func(http.Handler) 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
-			// Public paths: Terraform protocol endpoints
-			if isPublicPath(path) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// If no keys configured, allow all (open mode)
-			if !keyStore.HasKeys() {
+			// Only management API mutations require authentication. Protocol,
+			// mirror, health, metrics, UI, and management reads are public.
+			if !strings.HasPrefix(path, "/api/v1/") || r.Method == http.MethodGet || r.Method == http.MethodHead {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -150,13 +155,19 @@ func authMiddleware(keyStore *KeyStore, logger *slog.Logger) func(http.Handler) 
 			// Extract API key
 			apiKey := extractAPIKey(r)
 			if apiKey == "" {
-				httpJSONError(w, http.StatusUnauthorized, "API key required. Set X-API-Key header or api_key query parameter.")
+				if metrics != nil {
+					metrics.AuthFailures.Add(1)
+				}
+				httpJSONError(w, http.StatusUnauthorized, "API key required. Set X-API-Key or Authorization: Bearer header.")
 				return
 			}
 
 			// Determine required permission
 			required := requiredPermission(r)
 			if !keyStore.HasPermission(apiKey, required) {
+				if metrics != nil {
+					metrics.AuthFailures.Add(1)
+				}
 				ak := keyStore.Validate(apiKey)
 				name := "unknown"
 				if ak != nil {
@@ -178,30 +189,10 @@ func authMiddleware(keyStore *KeyStore, logger *slog.Logger) func(http.Handler) 
 	}
 }
 
-func isPublicPath(path string) bool {
-	public := []string{
-		"/.well-known/",
-		"/v1/providers/",
-		"/v1/modules/",
-		"/download/",
-		"/health",
-		"/metrics",
-		"/ui",
-		"/api/v1/stats",
-	}
-	for _, p := range public {
-		if strings.HasPrefix(path, p) {
-			return true
-		}
-	}
-	// GET on list/detail API endpoints is public for browsing
-	if strings.HasPrefix(path, "/api/v1/") {
-		return true // Read-only browsing is always public
-	}
-	return false
-}
-
 func requiredPermission(r *http.Request) Permission {
+	if r.URL.Path == "/api/v1/gc" {
+		return PermAdmin
+	}
 	switch r.Method {
 	case "DELETE":
 		return PermAdmin
@@ -216,9 +207,7 @@ func extractAPIKey(r *http.Request) string {
 	if key := r.Header.Get("X-API-Key"); key != "" {
 		return key
 	}
-	if key := r.URL.Query().Get("api_key"); key != "" {
-		return key
-	}
+
 	// Also support Bearer token
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
@@ -237,6 +226,47 @@ func (ks *KeyStore) reload() error {
 	var config APIKeysConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("parse keys file: %w", err)
+	}
+	if len(config.Keys) == 0 {
+		return fmt.Errorf("keys file must contain at least one API key")
+	}
+	seen := make(map[string]struct{}, len(config.Keys))
+	enabled := 0
+	migrated := false
+	for i := range config.Keys {
+		if config.Keys[i].Key != "" {
+			if config.Keys[i].Hash == "" {
+				config.Keys[i].Hash = hashKey(config.Keys[i].Key)
+			}
+			config.Keys[i].Key = ""
+			migrated = true
+		}
+		config.Keys[i].Hash = strings.ToLower(strings.TrimSpace(config.Keys[i].Hash))
+		decoded, err := hex.DecodeString(config.Keys[i].Hash)
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("key %q has an invalid SHA-256 hash", config.Keys[i].Name)
+		}
+		switch config.Keys[i].Permission {
+		case PermRead, PermWrite, PermAdmin:
+		default:
+			return fmt.Errorf("key %q has invalid permission %q", config.Keys[i].Name, config.Keys[i].Permission)
+		}
+		if _, exists := seen[config.Keys[i].Hash]; exists {
+			return fmt.Errorf("duplicate API key hash for %q", config.Keys[i].Name)
+		}
+		seen[config.Keys[i].Hash] = struct{}{}
+		if config.Keys[i].Enabled {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		return fmt.Errorf("keys file must contain at least one enabled API key")
+	}
+	if migrated {
+		if err := writeKeysConfigAtomic(ks.path, config); err != nil {
+			return fmt.Errorf("remove legacy plaintext keys: %w", err)
+		}
+		ks.logger.Warn("migrated legacy plaintext API keys to SHA-256 hashes")
 	}
 
 	ks.mu.Lock()
@@ -275,7 +305,6 @@ func (ks *KeyStore) createDefaultFile(path, defaultKey string) error {
 	config := APIKeysConfig{
 		Keys: []APIKey{
 			{
-				Key:        defaultKey,
 				Hash:       hashKey(defaultKey),
 				Name:       "default-admin",
 				Permission: PermAdmin,
@@ -284,11 +313,39 @@ func (ks *KeyStore) createDefaultFile(path, defaultKey string) error {
 			},
 		},
 	}
+	return writeKeysConfigAtomic(path, config)
+}
+
+func writeKeysConfigAtomic(path string, config APIKeysConfig) error {
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".keys-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // --- Helpers ---

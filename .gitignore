@@ -49,6 +49,7 @@ test-data/
 *.env
 .envrc
 *-filled.json
+examples/kubernetes/k3s/secret.yaml
 
 # Logs
 *.log

@@ -7,14 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-09
+
 ### Added
-- Nothing yet
+- Strict SemVer ordering, streaming upload/download paths, archive validation, provider checksum signing, security headers, Prometheus metrics, and hardened management authentication.
+- Production-ready `tfreg` push, pull, bundle, list, deprecate, delete, and garbage-collection workflows.
+- Maintained single-replica Docker Compose and Kubernetes deployment examples.
 
 ### Changed
-- Nothing yet
+- Standardized on filesystem-only storage with one server replica per persistent volume.
+- Management mutations now require hashed API-key authorization; query-string credentials are no longer accepted.
+- Provider and module artifacts are published atomically under immutable content-addressed names.
+- Docker, CI, and release builds use Go 1.26.5 and non-root containers.
 
 ### Fixed
-- Nothing yet
+- Corrected Terraform provider and module protocol response shapes, status codes, prerelease ordering, deprecation filtering, and provider binary signatures.
+- Confined storage operations against traversal and symlink escapes and bounded both compressed and expanded upload sizes.
+- Made CLI downloads checksum-verified and atomically replace destination files.
+- Replaced webhook signature construction with HMAC-SHA256 and made proxy-header trust opt-in.
 
 ## [1.0.0] - 2026-05-01
 

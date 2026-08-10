@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -22,7 +23,10 @@ var (
 	metrics  *RegistryMetrics
 	webhooks *WebhookManager
 	logger   *slog.Logger
+	signer   *RegistrySigner
 )
+
+var version = "dev"
 
 // Terraform Protocol Types
 type WellKnown struct {
@@ -62,14 +66,49 @@ type GPGPublicKey struct {
 }
 
 type ModuleVersionsResponse struct {
-	Modules []ModuleVersion `json:"modules"`
+	Modules []ModuleVersionsEntry `json:"modules"`
+}
+
+type ModuleVersionsEntry struct {
+	Source   string          `json:"source"`
+	Versions []ModuleVersion `json:"versions"`
 }
 
 type ModuleVersion struct {
 	Version string `json:"version"`
 }
 
+type ModuleArtifactMeta struct {
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+}
+
+func moduleArtifactKey(namespace, name, provider, version string) (string, error) {
+	prefix := fmt.Sprintf("modules/%s/%s/%s/%s", namespace, name, provider, version)
+	data, err := store.Get(prefix + "/artifact.json")
+	if err == nil {
+		var meta ModuleArtifactMeta
+		if json.Unmarshal(data, &meta) != nil || !moduleFileRE.MatchString(meta.Filename) {
+			return "", fmt.Errorf("invalid module artifact metadata")
+		}
+		key := prefix + "/" + meta.Filename
+		if !store.Exists(key) {
+			return "", os.ErrNotExist
+		}
+		return key, nil
+	}
+	legacy := prefix + "/module.tar.gz"
+	if store.Exists(legacy) {
+		return legacy, nil
+	}
+	return "", os.ErrNotExist
+}
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Printf("terraform-registry %s\n", version)
+		return
+	}
 	// Structured logging
 	logLevel := slog.LevelInfo
 	if os.Getenv("LOG_LEVEL") == "debug" {
@@ -95,6 +134,15 @@ func main() {
 	if err != nil {
 		logger.Error("failed to initialize storage", "error", err)
 		os.Exit(1)
+	}
+	signingKeyFile := envOrDefault("SIGNING_KEY_FILE", filepath_join(basePath, "signing-key.asc"))
+	signer, err = NewRegistrySigner(signingKeyFile)
+	if err != nil {
+		logger.Error("failed to initialize artifact signer", "error", err)
+		os.Exit(1)
+	}
+	if err := rebuildAllProviderChecksums(); err != nil {
+		logger.Warn("some legacy provider checksums could not be rebuilt", "error", err)
 	}
 
 	// Initialize API keys
@@ -135,9 +183,11 @@ func main() {
 
 	// Middleware chain (order matters)
 	r.Use(metricsMiddleware(metrics))
+	r.Use(securityHeadersMiddleware)
 	r.Use(rl.Middleware)
 	r.Use(auditMiddleware(auditLog, keyStore))
 	r.Use(authMiddleware(keyStore, logger))
+	r.Use(routeValidationMiddleware)
 
 	// Terraform protocol endpoints (always public)
 	r.HandleFunc("/.well-known/terraform.json", wellKnownHandler).Methods("GET")
@@ -177,11 +227,12 @@ func main() {
 
 	// Graceful shutdown
 	srv := &http.Server{
-		Addr:         ":" + port,
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 5 * time.Minute, // Long for large uploads
-		IdleTimeout:  120 * time.Second,
+		Addr:              ":" + port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      5 * time.Minute, // Long for large uploads
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Start periodic GC
@@ -268,10 +319,20 @@ func providerVersionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		platforms, _ := store.GetProviderPlatforms(namespace, providerType, v)
+		published := platforms[:0]
+		for _, platform := range platforms {
+			key := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, v, platform.Filename)
+			if store.Exists(key) {
+				published = append(published, platform)
+			}
+		}
+		if len(published) == 0 {
+			continue
+		}
 		versions = append(versions, ProviderVersion{
 			Version:   v,
 			Protocols: []string{"5.0"},
-			Platforms: platforms,
+			Platforms: published,
 		})
 	}
 
@@ -311,26 +372,33 @@ func providerDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, meta.Filename)
-
-	// Load GPG key if configured
-	var signingKeys SigningKeys
-	gpgKeyPath := fmt.Sprintf("providers/%s/%s/%s/metadata.json", namespace, providerType, version)
-	if vm, err := store.GetVersionMetadata(gpgKeyPath); err == nil && vm.GPGKeyArmor != "" {
-		signingKeys.GPGPublicKeys = []GPGPublicKey{{
-			KeyID:      vm.GPGKeyID,
-			ASCIIArmor: vm.GPGKeyArmor,
-		}}
+	if !store.Exists(zipKey) {
+		http.Error(w, `{"error":"artifact not found"}`, http.StatusNotFound)
+		return
 	}
+
+	checksumsName, signatureName := providerChecksumsNames(providerType, version)
+	versionPrefix := fmt.Sprintf("providers/%s/%s/%s/", namespace, providerType, version)
+	checksumsKey, signatureKey := versionPrefix+checksumsName, versionPrefix+signatureName
+	if signer == nil || !store.Exists(checksumsKey) || !store.Exists(signatureKey) {
+		http.Error(w, `{"error":"provider integrity metadata unavailable"}`, http.StatusInternalServerError)
+		return
+	}
+	signingKeys := SigningKeys{GPGPublicKeys: []GPGPublicKey{{
+		KeyID: signer.KeyID, ASCIIArmor: signer.PublicArmor,
+	}}}
 
 	SetTerraformProtocolHeaders(w)
 	_ = json.NewEncoder(w).Encode(ProviderDownloadResponse{
-		Protocols:   []string{"5.0"},
-		OS:          osName,
-		Arch:        arch,
-		Filename:    meta.Filename,
-		DownloadURL: store.DownloadURL(zipKey),
-		Shasum:      meta.Shasum,
-		SigningKeys: signingKeys,
+		Protocols:           []string{"5.0"},
+		OS:                  osName,
+		Arch:                arch,
+		Filename:            meta.Filename,
+		DownloadURL:         store.DownloadURL(zipKey),
+		ShasumsURL:          store.DownloadURL(checksumsKey),
+		ShasumsSignatureURL: store.DownloadURL(signatureKey),
+		Shasum:              meta.Shasum,
+		SigningKeys:         signingKeys,
 	})
 }
 
@@ -347,7 +415,15 @@ func networkMirrorIndexHandler(w http.ResponseWriter, r *http.Request) {
 
 	versionMap := make(map[string]struct{})
 	for _, v := range idx.Versions {
+		metaKey := fmt.Sprintf("providers/%s/%s/%s/metadata.json", namespace, providerType, v)
+		if meta, err := store.GetVersionMetadata(metaKey); err == nil && meta.Deprecated {
+			continue
+		}
 		versionMap[v] = struct{}{}
+	}
+	if len(versionMap) == 0 {
+		http.Error(w, `{"error":"provider not found"}`, http.StatusNotFound)
+		return
 	}
 
 	SetTerraformProtocolHeaders(w)
@@ -359,6 +435,17 @@ func networkMirrorVersionHandler(w http.ResponseWriter, r *http.Request) {
 	namespace := vars["namespace"]
 	providerType := vars["type"]
 	version := vars["version"]
+
+	idx, err := store.GetProviderIndex(namespace, providerType)
+	if err != nil || !indexHasVersion(idx, version) {
+		http.Error(w, `{"error":"version not found"}`, http.StatusNotFound)
+		return
+	}
+	versionMetaKey := fmt.Sprintf("providers/%s/%s/%s/metadata.json", namespace, providerType, version)
+	if meta, err := store.GetVersionMetadata(versionMetaKey); err == nil && meta.Deprecated {
+		http.Error(w, `{"error":"version not found"}`, http.StatusNotFound)
+		return
+	}
 
 	platforms, err := store.GetProviderPlatforms(namespace, providerType, version)
 	if err != nil {
@@ -380,10 +467,17 @@ func networkMirrorVersionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, meta.Filename)
+		if !store.Exists(zipKey) {
+			continue
+		}
 		archives[platformKey] = map[string]interface{}{
 			"url":    store.DownloadURL(zipKey),
 			"hashes": []string{fmt.Sprintf("zh:%s", meta.Shasum)},
 		}
+	}
+	if len(archives) == 0 {
+		http.Error(w, `{"error":"version not found"}`, http.StatusNotFound)
+		return
 	}
 
 	SetTerraformProtocolHeaders(w)
@@ -406,6 +500,13 @@ func moduleVersionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var modules []ModuleVersion
 	for _, v := range idx.Versions {
+		metaKey := fmt.Sprintf("modules/%s/%s/%s/%s/metadata.json", namespace, name, provider, v)
+		if meta, err := store.GetVersionMetadata(metaKey); err == nil && meta.Deprecated {
+			continue
+		}
+		if _, err := moduleArtifactKey(namespace, name, provider, v); err != nil {
+			continue
+		}
 		modules = append(modules, ModuleVersion{Version: v})
 	}
 
@@ -416,7 +517,9 @@ func moduleVersionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SetTerraformProtocolHeaders(w)
-	_ = json.NewEncoder(w).Encode(ModuleVersionsResponse{Modules: modules})
+	_ = json.NewEncoder(w).Encode(ModuleVersionsResponse{Modules: []ModuleVersionsEntry{{
+		Source: namespace + "/" + name + "/" + provider, Versions: modules,
+	}}})
 }
 
 func moduleDownloadHandler(w http.ResponseWriter, r *http.Request) {
@@ -430,8 +533,8 @@ func moduleDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		"provider", provider, "version", version)
 	metrics.ModuleDownloads.Add(1)
 
-	key := fmt.Sprintf("modules/%s/%s/%s/%s/module.tar.gz", namespace, name, provider, version)
-	if !store.Exists(key) {
+	key, err := moduleArtifactKey(namespace, name, provider, version)
+	if err != nil {
 		http.Error(w, `{"error":"module not found"}`, http.StatusNotFound)
 		return
 	}
@@ -457,28 +560,49 @@ func moduleLatestDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	latestVersion := idx.Versions[len(idx.Versions)-1]
-	downloadKey := fmt.Sprintf("modules/%s/%s/%s/%s/module.tar.gz", namespace, name, provider, latestVersion)
-	downloadURL := store.DownloadURL(downloadKey)
+	latestVersion := ""
+	latestKey := ""
+	for i := len(idx.Versions) - 1; i >= 0; i-- {
+		candidate := idx.Versions[i]
+		metaKey := fmt.Sprintf("modules/%s/%s/%s/%s/metadata.json", namespace, name, provider, candidate)
+		if meta, err := store.GetVersionMetadata(metaKey); err == nil && meta.Deprecated {
+			continue
+		}
+		downloadKey, err := moduleArtifactKey(namespace, name, provider, candidate)
+		if err == nil {
+			latestVersion = candidate
+			latestKey = downloadKey
+			break
+		}
+	}
+	if latestVersion == "" {
+		http.Error(w, `{"error":"no versions available"}`, http.StatusNotFound)
+		return
+	}
+	downloadURL := store.DownloadURL(latestKey)
 
 	w.Header().Set("X-Terraform-Get", downloadURL)
-	SetTerraformProtocolHeaders(w)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"version": latestVersion,
-	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func fileDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	path := vars["path"]
 
-	// Prevent path traversal
-	if strings.Contains(path, "..") {
+	// Only published artifacts are downloadable. Never expose indexes,
+	// metadata, key files, audit logs, or temporary storage objects.
+	if !isPublicArtifactPath(path) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	data, err := store.Get(path)
+	f, err := store.Open(path)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -491,8 +615,8 @@ func fileDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-	_, _ = w.Write(data)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(path)))
+	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

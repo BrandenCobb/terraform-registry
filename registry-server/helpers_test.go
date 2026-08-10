@@ -1,7 +1,10 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"mime/multipart"
 	"net/http/httptest"
@@ -28,14 +31,27 @@ func multipartBody(t *testing.T, fieldName, filename string, data []byte) *bytes
 	return body
 }
 
-// fakeZipData returns a minimal valid ZIP file (PK magic bytes).
+// fakeZipData returns a structurally valid provider ZIP.
 func fakeZipData() []byte {
-	return []byte{0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	var body bytes.Buffer
+	zw := zip.NewWriter(&body)
+	entry, _ := zw.Create("terraform-provider-aws_v1.0.0")
+	_, _ = entry.Write([]byte("provider binary"))
+	_ = zw.Close()
+	return body.Bytes()
 }
 
-// fakeGzipData returns a minimal valid GZIP file (magic bytes).
+// fakeGzipData returns a structurally valid Terraform module tarball.
 func fakeGzipData() []byte {
-	return []byte{0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	var body bytes.Buffer
+	gw := gzip.NewWriter(&body)
+	tw := tar.NewWriter(gw)
+	content := []byte("terraform {}\n")
+	_ = tw.WriteHeader(&tar.Header{Name: "main.tf", Mode: 0644, Size: int64(len(content))})
+	_, _ = tw.Write(content)
+	_ = tw.Close()
+	_ = gw.Close()
+	return body.Bytes()
 }
 
 // jsonBody creates a JSON request body.

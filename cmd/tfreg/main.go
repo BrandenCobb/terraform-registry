@@ -1,18 +1,22 @@
 package main
 
 import (
-	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-const version = "0.1.0"
+var version = "dev"
+
+var httpClient = &http.Client{Timeout: 10 * time.Minute}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -91,7 +95,7 @@ func pushProvider(args []string) {
 	namespace := fs.String("namespace", "", "Provider namespace (e.g., hashicorp)")
 	name := fs.String("name", "", "Provider name (e.g., aws)")
 	ver := fs.String("version", "", "Provider version (e.g., 6.31.0)")
-	file := fs.String("file", "", "Path to provider binary or zip file")
+	file := fs.String("file", "", "Path to provider ZIP file")
 	osName := fs.String("os", "linux", "Operating system")
 	arch := fs.String("arch", "amd64", "Architecture")
 	fs.Parse(args)
@@ -183,7 +187,7 @@ func pullProvider(args []string) {
 	metaURL := fmt.Sprintf("%s/v1/providers/%s/%s/%s/download/%s/%s", *registry, *namespace, *name, *ver, *osName, *arch)
 	fmt.Printf("Fetching download info for %s/%s@%s (%s/%s)...\n", *namespace, *name, *ver, *osName, *arch)
 
-	resp, err := http.Get(metaURL)
+	resp, err := httpClient.Get(metaURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -206,14 +210,24 @@ func pullProvider(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Downloading %s (sha256: %s)...\n", meta.Filename, meta.Shasum[:16]+"...")
+	meta.Filename = filepath.Base(meta.Filename)
+	if meta.Filename == "." || meta.Filename == "" {
+		fmt.Fprintln(os.Stderr, "Error: registry returned an invalid filename")
+		os.Exit(1)
+	}
+	if len(meta.Shasum) != 64 {
+		fmt.Fprintln(os.Stderr, "Error: registry returned an invalid SHA256 checksum")
+		os.Exit(1)
+	}
+	fmt.Printf("Downloading %s (sha256: %s...)...\n", meta.Filename, meta.Shasum[:16])
 
-	if err := downloadFile(meta.DownloadURL, filepath.Join(*output, meta.Filename)); err != nil {
+	dest := filepath.Join(*output, meta.Filename)
+	if err := downloadFileVerified(meta.DownloadURL, dest, meta.Shasum); err != nil {
 		fmt.Fprintf(os.Stderr, "Error downloading: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Saved to %s\n", filepath.Join(*output, meta.Filename))
+	fmt.Printf("Saved to %s\n", dest)
 }
 
 func pullModule(args []string) {
@@ -241,21 +255,14 @@ func pullModule(args []string) {
 
 	fmt.Printf("Downloading module %s/%s/%s...\n", *namespace, *name, *provider)
 
-	// Follow redirect
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return nil // follow redirects
-		},
-	}
-
-	resp, err := client.Get(downloadURL)
+	resp, err := httpClient.Get(downloadURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Fprintf(os.Stderr, "Error (%d): %s\n", resp.StatusCode, string(body))
 		os.Exit(1)
@@ -266,15 +273,13 @@ func pullModule(args []string) {
 		outFile = filepath.Join(*output, fmt.Sprintf("%s-%s-%s-%s.tar.gz", *namespace, *name, *provider, *ver))
 	}
 
-	f, err := os.Create(outFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating file: %v\n", err)
+	artifactURL := resp.Header.Get("X-Terraform-Get")
+	if artifactURL == "" {
+		fmt.Fprintln(os.Stderr, "Error: registry response omitted X-Terraform-Get")
 		os.Exit(1)
 	}
-	defer func() { _ = f.Close() }()
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+	if err := downloadFile(artifactURL, outFile); err != nil {
+		fmt.Fprintf(os.Stderr, "Error downloading module: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -323,12 +328,16 @@ func handleList(args []string) {
 	}
 
 	url := registry + endpoint
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil) // #nosec G704 -- registry origin is intentionally supplied by the CLI user.
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid registry URL: %v\n", err)
+		os.Exit(1)
+	}
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req) // #nosec G704 -- this CLI is a user-directed registry client.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -524,12 +533,16 @@ func deleteProvider(args []string) {
 	url := fmt.Sprintf("%s/api/v1/providers/%s/%s/%s", *registry, *namespace, *name, *ver)
 	fmt.Printf("Deleting provider %s/%s@%s...\n", *namespace, *name, *ver)
 
-	req, _ := http.NewRequest("DELETE", url, nil)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid registry URL: %v\n", err)
+		os.Exit(1)
+	}
 	if *apiKey != "" {
 		req.Header.Set("X-API-Key", *apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -557,12 +570,16 @@ func deleteModule(args []string) {
 	url := fmt.Sprintf("%s/api/v1/modules/%s/%s/%s/%s", *registry, *namespace, *name, *provider, *ver)
 	fmt.Printf("Deleting module %s/%s/%s@%s...\n", *namespace, *name, *provider, *ver)
 
-	req, _ := http.NewRequest("DELETE", url, nil)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid registry URL: %v\n", err)
+		os.Exit(1)
+	}
 	if *apiKey != "" {
 		req.Header.Set("X-API-Key", *apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -575,66 +592,107 @@ func deleteModule(args []string) {
 // --- Helpers ---
 
 func uploadFile(url, filePath, apiKey string) (*http.Response, error) {
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) // #nosec G304 -- upload path is explicitly selected by the CLI user.
 	if err != nil {
 		return nil, fmt.Errorf("cannot open file: %w", err)
 	}
-	defer func() { _ = file.Close() }()
 
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	contentType := writer.FormDataContentType()
+	go func() {
+		defer func() { _ = file.Close() }()
+		part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+		if err == nil {
+			_, err = io.Copy(part, file)
+		}
+		if closeErr := writer.Close(); err == nil {
+			err = closeErr
+		}
+		_ = pw.CloseWithError(err)
+	}()
 
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	req, err := http.NewRequest(http.MethodPost, url, pr)
 	if err != nil {
+		_ = pr.Close()
 		return nil, err
 	}
-
-	if _, err := io.Copy(part, file); err != nil {
-		return nil, err
-	}
-
-	_ = writer.Close()
-
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
 	}
-
-	return http.DefaultClient.Do(req)
+	return httpClient.Do(req)
 }
 
 func downloadFile(url, destPath string) error {
-	resp, err := http.Get(url)
+	return downloadFileWithChecksum(url, destPath, "")
+}
+
+func downloadFileVerified(url, destPath, expectedSHA256 string) error {
+	if len(expectedSHA256) != 64 {
+		return fmt.Errorf("invalid expected SHA256 checksum")
+	}
+	return downloadFileWithChecksum(url, destPath, expectedSHA256)
+}
+
+func downloadFileWithChecksum(url, destPath, expectedSHA256 string) error {
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return err
 	}
-
-	f, err := os.Create(destPath)
+	f, err := os.CreateTemp(filepath.Dir(destPath), ".tfreg-download-*")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
-
-	_, err = io.Copy(f, resp.Body)
-	return err
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		_ = f.Close()
+		if !ok {
+			_ = os.Remove(tmp)
+		}
+	}()
+	var writer io.Writer = f
+	var hashWriter hash.Hash
+	if expectedSHA256 != "" {
+		hashWriter = sha256.New()
+		writer = io.MultiWriter(f, hashWriter)
+	}
+	if _, err := io.Copy(writer, resp.Body); err != nil {
+		return err
+	}
+	if hashWriter != nil {
+		actual := fmt.Sprintf("%x", hashWriter.Sum(nil))
+		if !strings.EqualFold(actual, expectedSHA256) {
+			return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actual)
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, destPath); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 func printResponse(resp *http.Response) {
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fmt.Fprintf(os.Stderr, "Error (%d): %s\n", resp.StatusCode, strings.TrimSpace(string(body)))
+		os.Exit(1)
+	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		fmt.Println(string(body))
@@ -666,17 +724,16 @@ func newFlagSet(name string) *flagSet {
 
 // Simple flag set wrapper
 type flagSet struct {
-	name    string
-	flags   []flag
-	parsed  map[string]string
-	rest    []string
+	name  string
+	flags []flag
+	rest  []string
 }
 
 type flag struct {
-	name    string
-	value   *string
-	def     string
-	desc    string
+	name  string
+	value *string
+	def   string
+	desc  string
 }
 
 func (fs *flagSet) String(name, def, desc string) *string {
@@ -691,18 +748,37 @@ func (fs *flagSet) Parse(args []string) {
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
 			key := strings.TrimPrefix(args[i], "--")
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
-				for j := range fs.flags {
-					if fs.flags[j].name == key {
-						*fs.flags[j].value = args[i+1]
-						break
+			if key == "help" {
+				fs.Usage()
+				os.Exit(0)
+			}
+			found := false
+			for j := range fs.flags {
+				if fs.flags[j].name == key {
+					found = true
+					if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+						fmt.Fprintf(os.Stderr, "Error: --%s requires a value\n", key)
+						fs.Usage()
+						os.Exit(2)
 					}
+					*fs.flags[j].value = args[i+1]
+					i++
+					break
 				}
-				i++
+			}
+			if !found {
+				fmt.Fprintf(os.Stderr, "Error: unknown option --%s\n", key)
+				fs.Usage()
+				os.Exit(2)
 			}
 		} else {
 			remaining = append(remaining, args[i])
 		}
+	}
+	if len(remaining) > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unexpected argument %q\n", remaining[0])
+		fs.Usage()
+		os.Exit(2)
 	}
 	fs.rest = remaining
 }
