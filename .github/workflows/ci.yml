@@ -94,18 +94,18 @@ jobs:
           mkdir module && printf 'variable "name" { type = string }\n' > module/main.tf
           tar czf module.tar.gz -C module .
 
-          docker cp provider.zip terraform-registry:/tmp/provider.zip
-          docker cp module.tar.gz terraform-registry:/tmp/module.tar.gz
-          docker exec -e TFREG_REGISTRY=http://localhost:8080 -e TFREG_API_KEY=integration-secret terraform-registry \
-            tfreg push provider --namespace test --name example --version 1.0.0 --file /tmp/provider.zip
-          docker exec -e TFREG_REGISTRY=http://localhost:8080 -e TFREG_API_KEY=integration-secret terraform-registry \
-            tfreg push module --namespace test --name vpc --provider aws --version 1.0.0 --file /tmp/module.tar.gz
-          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry tfreg list providers
-          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry tfreg list modules
-          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry \
-            tfreg pull provider --namespace test --name example --version 1.0.0 --output /tmp
-          docker exec -e TFREG_REGISTRY=http://localhost:8080 terraform-registry \
-            tfreg pull module --namespace test --name vpc --provider aws --version 1.0.0 --output /tmp
+          docker cp terraform-registry:/usr/local/bin/tfreg ./tfreg
+          chmod +x ./tfreg
+          TFREG_REGISTRY=http://localhost:5000 TFREG_API_KEY=integration-secret \
+            ./tfreg push provider --namespace test --name example --version 1.0.0 --file provider.zip
+          TFREG_REGISTRY=http://localhost:5000 TFREG_API_KEY=integration-secret \
+            ./tfreg push module --namespace test --name vpc --provider aws --version 1.0.0 --file module.tar.gz
+          TFREG_REGISTRY=http://localhost:5000 ./tfreg list providers
+          TFREG_REGISTRY=http://localhost:5000 ./tfreg list modules
+          TFREG_REGISTRY=http://localhost:5000 \
+            ./tfreg pull provider --namespace test --name example --version 1.0.0 --output /tmp
+          TFREG_REGISTRY=http://localhost:5000 \
+            ./tfreg pull module --namespace test --name vpc --provider aws --version 1.0.0 --output /tmp
 
           curl -fsS http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1" and ."modules.v1"'
           curl -fsS http://localhost:5000/v1/modules/test/vpc/aws/versions | jq -e '.modules[0].versions[0].version == "1.0.0"'
