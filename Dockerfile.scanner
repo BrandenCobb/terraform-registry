@@ -1,24 +1,28 @@
-FROM golang:1.26.5-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS builder
 
 ARG VERSION=dev
+ARG TARGETOS=linux
+ARG TARGETARCH
 WORKDIR /app
 COPY registry-server/go.mod registry-server/go.sum ./registry-server/
 RUN cd registry-server && go mod download
 COPY registry-server/*.go ./registry-server/
 COPY registry-server/ui/ ./registry-server/ui/
-RUN cd registry-server && CGO_ENABLED=0 GOOS=linux go build -trimpath \
+RUN cd registry-server && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-w -s -X main.version=${VERSION}" -o /app/terraform-registry .
 COPY cmd/tfreg/go.mod ./cmd/tfreg/
 COPY cmd/tfreg/*.go ./cmd/tfreg/
-RUN cd cmd/tfreg && CGO_ENABLED=0 GOOS=linux go build -trimpath \
+RUN cd cmd/tfreg && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-w -s -X main.version=${VERSION}" -o /app/tfreg .
 
-FROM golang:1.26.5-alpine AS trivy-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS trivy-builder
+ARG TARGETOS=linux
+ARG TARGETARCH
 RUN apk add --no-cache git
 RUN git clone --branch v0.73.0 --depth 1 https://github.com/aquasecurity/trivy.git /src
 WORKDIR /src
 RUN go get github.com/go-git/go-git/v5@v5.19.2 oras.land/oras-go/v2@v2.6.2 golang.org/x/text@v0.39.0 && \
-    go mod tidy && GOEXPERIMENT=jsonv2 CGO_ENABLED=0 go build -trimpath \
+    go mod tidy && GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
         -ldflags="-w -s -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.73.0" \
         -o /trivy ./cmd/trivy
 FROM bridgecrew/checkov@sha256:12a62da01af22654883aee3b9da18ba4297f123f5122663bf65235db37934144

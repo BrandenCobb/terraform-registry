@@ -149,6 +149,32 @@ func scanAllowed(digest string) bool {
 	return policyAllows(scanConfig.Mode, record, waivers, time.Now().UTC(), scanConfig.StaleAfter)
 }
 
+func policyResultWithWaivers(record *ScanRecord, waivers []*Waiver, now time.Time) PolicyResult {
+	if policyAllows(scanConfig.Mode, record, waivers, now, scanConfig.StaleAfter) {
+		return PolicyAllow
+	}
+	return PolicyDeny
+}
+
+func activeWaiversByDigest(now time.Time) (map[string][]*Waiver, error) {
+	byDigest := make(map[string][]*Waiver)
+	if waiverRepo == nil {
+		return byDigest, nil
+	}
+	waivers, err := waiverRepo.List()
+	if err != nil {
+		return nil, err
+	}
+	for i := range waivers {
+		if !waivers[i].Active(now) {
+			continue
+		}
+		waiver := waivers[i]
+		byDigest[waiver.Digest] = append(byDigest[waiver.Digest], &waiver)
+	}
+	return byDigest, nil
+}
+
 func artifactPathScanAllowed(path string) bool {
 	if !scanConfig.Enabled || scanConfig.Mode == ScanModeVisibility {
 		return true
@@ -181,6 +207,60 @@ func securityHealthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: data})
 }
 
+type SecurityInventorySummary struct {
+	Enabled  bool          `json:"enabled"`
+	Mode     ScanMode      `json:"mode"`
+	Total    int           `json:"total"`
+	Clean    int           `json:"clean"`
+	Findings int           `json:"findings"`
+	Active   int           `json:"active"`
+	Unknown  int           `json:"unknown"`
+	Blocked  int           `json:"blocked"`
+	Counts   FindingCounts `json:"counts"`
+}
+
+func securitySummaryHandler(w http.ResponseWriter, r *http.Request) {
+	summary := SecurityInventorySummary{Enabled: scanConfig.Enabled, Mode: scanConfig.Mode}
+	if scanRepo == nil {
+		writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: summary})
+		return
+	}
+	records, err := scanRepo.CurrentRecords()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Unable to summarize scans"})
+		return
+	}
+	now := time.Now().UTC()
+	waiversByDigest, err := activeWaiversByDigest(now)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Unable to summarize policy"})
+		return
+	}
+	for _, record := range records {
+		summary.Total++
+		if policyResultWithWaivers(&record, waiversByDigest[record.Digest], now) == PolicyDeny {
+			summary.Blocked++
+		}
+		scanSummary := record.Summary(now, scanConfig.StaleAfter)
+		summary.Counts.Critical += scanSummary.Counts.Critical
+		summary.Counts.High += scanSummary.Counts.High
+		summary.Counts.Medium += scanSummary.Counts.Medium
+		summary.Counts.Low += scanSummary.Counts.Low
+		summary.Counts.Unknown += scanSummary.Counts.Unknown
+		switch scanSummary.Status {
+		case ScanClean:
+			summary.Clean++
+		case ScanFindings:
+			summary.Findings++
+		case ScanQueued, ScanScanning:
+			summary.Active++
+		default:
+			summary.Unknown++
+		}
+	}
+	writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: summary})
+}
+
 func securityScansHandler(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := scanPagination(w, r)
 	if !ok {
@@ -201,15 +281,22 @@ func securityScansHandler(w http.ResponseWriter, r *http.Request) {
 		Summary ScanSummary `json:"summary"`
 	}
 	filtered := make([]overview, 0, len(records))
+	now := time.Now().UTC()
+	waiversByDigest, err := activeWaiversByDigest(now)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Unable to evaluate scan policy"})
+		return
+	}
 	for _, record := range records {
-		record.Status = record.EffectiveStatus(time.Now().UTC(), scanConfig.StaleAfter)
-		summary := record.Summary(time.Now().UTC(), scanConfig.StaleAfter)
+		record.Status = record.EffectiveStatus(now, scanConfig.StaleAfter)
+		record.PolicyResult = policyResultWithWaivers(&record, waiversByDigest[record.Digest], now)
+		summary := record.Summary(now, scanConfig.StaleAfter)
 		record.Findings = nil
 		record.ArtifactKey = ""
 		if kind != "" && string(record.Kind) != kind {
 			continue
 		}
-		if status != "" && string(record.EffectiveStatus(time.Now().UTC(), scanConfig.StaleAfter)) != status {
+		if status != "" && string(record.Status) != status {
 			continue
 		}
 		if r.URL.Query().Get("severity") != "" && summary.HighestSeverity != severity {
@@ -241,11 +328,13 @@ func securityScanDetailHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, APIResponse{Success: false, Message: "Scan not found"})
 		return
 	}
+	now := time.Now().UTC()
 	var waivers []*Waiver
 	if waiverRepo != nil {
-		waivers, _ = waiverRepo.Active(digest, time.Now().UTC())
+		waivers, _ = waiverRepo.Active(digest, now)
 	}
-	writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{"scan": record, "summary": record.Summary(time.Now().UTC(), scanConfig.StaleAfter), "waivers": waivers}})
+	record.PolicyResult = policyResultWithWaivers(record, waivers, now)
+	writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{"scan": record, "summary": record.Summary(now, scanConfig.StaleAfter), "waivers": waivers}})
 }
 
 func securityScanHistoryHandler(w http.ResponseWriter, r *http.Request) {
