@@ -33,7 +33,7 @@ spec:
           claimName: terraform-registry-data
       containers:
       - name: registry
-        image: ghcr.io/brandencobb/terraform-registry:v2.1.0
+        image: ghcr.io/brandencobb/terraform-registry:v2.2.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080

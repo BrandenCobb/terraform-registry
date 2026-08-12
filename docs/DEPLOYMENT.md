@@ -44,7 +44,7 @@ Production rules:
 1. Keep `replicas: 1` and use a `Recreate` strategy.
 2. Mount the PVC at `/var/lib/terraform-registry`.
 3. Set pod `fsGroup`, `runAsUser`, and `runAsGroup` to `65534`.
-4. Pin an immutable image tag such as `v2.1.0` (or a digest), never `latest`.
+4. Pin an immutable image tag such as `v2.2.0` (or a digest), never `latest`.
 5. Put `REGISTRY_API_KEY` in a Kubernetes Secret for initial bootstrap. After `keys.json` exists, manage hashed keys on the persistent volume.
 6. Route TLS traffic through an ingress and set `BASE_URL` to that HTTPS origin.
 7. Use `/health` for liveness and readiness; it performs a storage write/delete check.
