@@ -17,7 +17,7 @@ docker run -d \
   --tmpfs /tmp:size=64m,mode=1777 \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
-  ghcr.io/brandencobb/terraform-registry:v2.2.0
+  ghcr.io/brandencobb/terraform-registry:v2.3.0
 ```
 
 The image runs as UID/GID 65534. A named volume is recommended because Docker
