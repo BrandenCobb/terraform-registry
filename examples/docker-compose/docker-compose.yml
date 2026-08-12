@@ -1,6 +1,6 @@
 services:
   registry:
-    image: ghcr.io/brandencobb/terraform-registry:v2.2.0
+    image: ghcr.io/brandencobb/terraform-registry:v2.3.0
     container_name: terraform-registry
     ports:
       - "5000:8080"

@@ -49,7 +49,7 @@ docker run -d --name terraform-registry \
   -v terraform-registry-data:/var/lib/terraform-registry \
   -e BASE_URL=http://localhost:5000 \
   -e REGISTRY_API_KEY="$REGISTRY_API_KEY" \
-  ghcr.io/brandencobb/terraform-registry:v2.2.0
+  ghcr.io/brandencobb/terraform-registry:v2.3.0
 ```
 
 Production deployments must set `BASE_URL` to the externally reachable HTTPS URL and terminate TLS at a reverse proxy or ingress. Run one server replica per filesystem volume.
@@ -59,7 +59,7 @@ Production deployments must set `BASE_URL` to the externally reachable HTTPS URL
 Download a directly runnable binary from the [latest release](https://github.com/BrandenCobb/terraform-registry/releases/latest):
 
 ```bash
-curl -fLO https://github.com/BrandenCobb/terraform-registry/releases/download/v2.2.0/tfreg-linux-amd64
+curl -fLO https://github.com/BrandenCobb/terraform-registry/releases/download/v2.3.0/tfreg-linux-amd64
 chmod +x tfreg-linux-amd64
 sudo install tfreg-linux-amd64 /usr/local/bin/tfreg
 

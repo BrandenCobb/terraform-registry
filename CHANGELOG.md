@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-12
+
 ### Added
 - A responsive enterprise command center with registry posture scoring, live scanner health, complete-inventory security summaries, catalog search, scan filtering, and safe DOM-only artifact rendering.
 
@@ -124,7 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CGO disabled for static binaries
 - Multi-stage Docker builds for small images
 
-[Unreleased]: https://github.com/BrandenCobb/terraform-registry/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/BrandenCobb/terraform-registry/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v2.3.0
 [2.2.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v2.2.0
 [2.1.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v2.1.0
 [1.0.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v1.0.0
