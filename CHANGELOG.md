@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-12
+
 ### Added
 - Durable digest-bound asynchronous Trivy provider scanning and Checkov module scanning with bounded workers, timeouts, startup recovery, scheduled rescans, history, raw JSON retention, and legacy-artifact backfill.
 - Visibility, quarantine, and enforcement policy modes; severity thresholds; expiring audited waivers; consistent protocol, mirror, and direct-download gating.
