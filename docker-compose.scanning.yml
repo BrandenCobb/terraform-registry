@@ -1,0 +1,23 @@
+services:
+  terraform-registry:
+    image: ghcr.io/brandencobb/terraform-registry-scanner:v2.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile.scanner
+      args:
+        VERSION: v2.2.0
+    environment:
+      SCANNING_ENABLED: "true"
+      SCAN_MODE: "${SCAN_MODE:-visibility}"
+      SCAN_WORKERS: "${SCAN_WORKERS:-1}"
+      SCAN_TIMEOUT: "${SCAN_TIMEOUT:-15m}"
+      SCAN_STALE_AFTER: "${SCAN_STALE_AFTER:-168h}"
+      SCAN_INTERVAL: "${SCAN_INTERVAL:-1h}"
+      SCAN_MAX_REPORT_MB: "${SCAN_MAX_REPORT_MB:-10}"
+      SCAN_DENY_SEVERITIES: "${SCAN_DENY_SEVERITIES:-critical,high}"
+      SCAN_OFFLINE: "${SCAN_OFFLINE:-false}"
+      TRIVY_PATH: /usr/local/bin/trivy
+      CHECKOV_PATH: /usr/local/bin/checkov
+      TRIVY_CACHE_DIR: /var/lib/terraform-registry/trivy-cache
+    tmpfs:
+      - /tmp:size=1g,mode=1777

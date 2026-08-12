@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Durable digest-bound asynchronous Trivy provider scanning and Checkov module scanning with bounded workers, timeouts, startup recovery, scheduled rescans, history, raw JSON retention, and legacy-artifact backfill.
+- Visibility, quarantine, and enforcement policy modes; severity thresholds; expiring audited waivers; consistent protocol, mirror, and direct-download gating.
+- Security overview/detail APIs, scanner readiness, Prometheus scan metrics, scan webhooks, and an accessible security dashboard with safe report rendering.
+- A non-root, read-only-compatible scanner image variant pinned to Trivy 0.73.0 and Checkov 3.3.9.
+
 ## [2.1.0] - 2026-08-09
 
 ### Added

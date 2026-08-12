@@ -13,6 +13,7 @@ A production-focused, self-hosted Terraform provider and module registry. It is 
 - RBAC API keys (`read`, `write`, `admin`) for management mutations
 - Atomic writes, bounded streaming uploads/downloads, input validation, and traversal protection
 - Embedded dashboard at `/ui`
+- Optional enterprise artifact scanning: Trivy for provider ZIPs, Checkov for modules, durable history, policy quarantine, waivers, metrics, webhooks, and a security dashboard
 - Prometheus metrics, JSON logs, audit logs, rate limiting, and signed webhooks
 - Linux, macOS, and Windows release binaries; multi-architecture container images
 
@@ -28,6 +29,16 @@ curl -fsS http://localhost:5000/health
 The named Docker volume is persistent and writable by the non-root container. Save `REGISTRY_API_KEY`; it is the initial admin credential. If it is omitted, the server generates a key once and prints it to container logs.
 
 Open <http://localhost:5000/ui>.
+
+### Enable artifact scanning
+
+```bash
+SCAN_MODE=visibility \
+  docker compose -f docker-compose.yml -f docker-compose.scanning.yml up -d
+curl -fsS http://localhost:5000/api/v1/security/health
+```
+
+Begin with `visibility`. Existing artifacts are discovered and queued during startup. After the backlog is clean and waivers are documented, switch to `quarantine` or `enforce`; blocking modes hide unknown, stale, errored, or denied artifacts consistently from Terraform protocol discovery and downloads. See [configuration](docs/CONFIGURATION.md#artifact-scanning).
 
 ### Pull the published image directly
 
@@ -134,7 +145,7 @@ Private Terraform services require HTTPS outside local development.
 
 ## Authentication
 
-Protocol, mirror, artifact download, health, metrics, UI, and management `GET` routes are public. Management mutations require either:
+Protocol, mirror, artifact download, health, metrics, UI, and management overview `GET` routes are public. Detailed scan findings/history/raw reports require a read-capable key. Management mutations require either:
 
 ```text
 X-API-Key: <key>

@@ -15,6 +15,9 @@ registry-server/          # Server (Go, gorilla/mux)
   middleware.go            # Rate limiter, audit log, upload validation
   metrics.go              # Prometheus + JSON metrics
   webhooks.go             # Webhook notifications on publish/delete/deprecate
+  scanning.go             # Scan records, policy, waivers, safe extraction/parsing
+  scanner_manager.go      # Durable queue, workers, recovery, backfill, scheduling
+  scanning_api.go         # Security overview/detail/report/rescan/waiver APIs
   crypto.go               # SHA256, GPG verification helpers
   ui.go                   # Embedded web UI (go:embed)
   ui/                     # Dashboard HTML/CSS/JS
@@ -24,7 +27,9 @@ cmd/tfreg/                # CLI tool (Go, zero deps)
   archive.go              # zip/tar.gz helpers
 
 Dockerfile                # Multi-stage: server + CLI
+Dockerfile.scanner        # Scanner variant with pinned Trivy + Checkov
 docker-compose.yml        # Quick start
+docker-compose.scanning.yml # Scanner-enabled overlay
 ```
 
 ## Build & Run
@@ -84,6 +89,8 @@ Terraform protocol endpoints are always public (no auth needed for `terraform in
 │       ├── module.tar.gz
 │       └── metadata.json
 ├── keys.json                         # API keys
+├── scans/                            # Digest-bound current/history/raw reports + waivers
+├── trivy-cache/                      # Rebuildable vulnerability database cache
 └── tmp/                              # Temp uploads (GC'd hourly)
 ```
 
@@ -108,6 +115,12 @@ Terraform protocol endpoints are always public (no auth needed for `terraform in
 - `DELETE /api/v1/modules/{ns}/{name}/{provider}/{ver}` — Delete (admin)
 - `POST /api/v1/modules/{ns}/{name}/{provider}/{ver}/deprecate` — Deprecate
 - `POST /api/v1/gc` — Trigger garbage collection (admin)
+- `GET /api/v1/security/scans` — Public redacted security overview
+- `GET /api/v1/security/scans/{digest}` — Authenticated findings/detail
+- `GET /api/v1/security/scans/{digest}/history` — Authenticated history
+- `GET /api/v1/security/scans/{digest}/reports/{scanID}` — Authenticated raw report
+- `POST /api/v1/security/scans/{digest}/rescan` — Manual rescan (write)
+- `POST /api/v1/security/scans/{digest}/waivers` — Expiring waiver (admin)
 
 ### Operations
 - `GET /health` — Health check (JSON)
@@ -119,6 +132,8 @@ Terraform protocol endpoints are always public (no auth needed for `terraform in
 Mount PVC at `STORAGE_PATH`. All writes are atomic (temp+rename).
 File-level mutex prevents concurrent writes to same artifact.
 Hourly GC cleans orphaned temp files. Graceful shutdown on SIGTERM/SIGINT.
+
+Run exactly one registry process per filesystem volume. Scanning is optional and filesystem-backed: provider ZIPs use Trivy, module archives use Checkov, and artifacts are never executed. Begin upgrades in `SCAN_MODE=visibility`; `quarantine`/`enforce` fail closed for unknown, queued, scanning, errored, stale, or policy-denied digests. Persist the complete storage volume (including scan history and waivers) and the Trivy cache; scanner workspaces remain disposable under `/tmp`.
 
 ```yaml
 # Kubernetes PVC

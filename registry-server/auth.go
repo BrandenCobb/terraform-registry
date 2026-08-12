@@ -147,7 +147,8 @@ func authMiddleware(keyStore *KeyStore, logger *slog.Logger) func(http.Handler) 
 
 			// Only management API mutations require authentication. Protocol,
 			// mirror, health, metrics, UI, and management reads are public.
-			if !strings.HasPrefix(path, "/api/v1/") || r.Method == http.MethodGet || r.Method == http.MethodHead {
+			publicManagementRead := (r.Method == http.MethodGet || r.Method == http.MethodHead) && !privateSecurityRead(r)
+			if !strings.HasPrefix(path, "/api/v1/") || publicManagementRead {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -189,8 +190,19 @@ func authMiddleware(keyStore *KeyStore, logger *slog.Logger) func(http.Handler) 
 	}
 }
 
+func privateSecurityRead(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if path == "/api/v1/security/scans" || path == "/api/v1/security/health" {
+		return false
+	}
+	return strings.HasPrefix(path, "/api/v1/security/scans/")
+}
+
 func requiredPermission(r *http.Request) Permission {
-	if r.URL.Path == "/api/v1/gc" {
+	if r.URL.Path == "/api/v1/gc" || strings.Contains(r.URL.Path, "/waivers") {
 		return PermAdmin
 	}
 	switch r.Method {

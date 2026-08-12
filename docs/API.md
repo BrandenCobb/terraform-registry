@@ -4,7 +4,7 @@ All responses are JSON unless the endpoint returns an artifact or the Terraform 
 
 ## Authentication
 
-Terraform protocol, network mirror, downloads, UI, health, metrics, and management reads are public. Management mutations require:
+Terraform protocol, network mirror, downloads, UI, health, metrics, and management overview reads are public. Detailed security findings, history, and raw reports require any authenticated key. Management mutations require:
 
 ```http
 X-API-Key: <key>
@@ -78,6 +78,14 @@ Success is `204 No Content` with `X-Terraform-Get` pointing to the module archiv
 | POST | `/api/v1/modules/{namespace}/{name}/{provider}/{version}/deprecate` | write | Deprecate existing version |
 | DELETE | `/api/v1/modules/{namespace}/{name}/{provider}/{version}` | admin | Delete version |
 | POST | `/api/v1/gc` | admin | Remove stale temporary files |
+| GET | `/api/v1/security/health` | public | Scanner enablement, mode, readiness, queue depth |
+| GET | `/api/v1/security/scans` | public | Paginated status-only security overview |
+| GET | `/api/v1/security/scans/{digest}` | read | Current detail, findings, policy explanation, active waivers |
+| GET | `/api/v1/security/scans/{digest}/history` | read | Digest-bound scan history |
+| GET | `/api/v1/security/scans/{digest}/reports/{scanID}` | read | Original machine-readable scanner report |
+| POST | `/api/v1/security/scans/{digest}/rescan` | write | Queue a manual rescan |
+| POST | `/api/v1/security/scans/{digest}/waivers` | admin | Create a time-bounded waiver |
+| DELETE | `/api/v1/security/waivers/{waiverID}` | admin | Revoke a waiver |
 
 Upload example:
 

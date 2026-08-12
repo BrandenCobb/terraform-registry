@@ -12,15 +12,24 @@ import (
 // Uses atomic operations for lock-free concurrent access.
 type RegistryMetrics struct {
 	// Counters
-	RequestsTotal     atomic.Int64
-	RequestsOK        atomic.Int64
-	RequestsErr       atomic.Int64
-	ProviderUploads   atomic.Int64
-	ProviderDownloads atomic.Int64
-	ModuleUploads     atomic.Int64
-	ModuleDownloads   atomic.Int64
-	AuthFailures      atomic.Int64
-	RateLimitHits     atomic.Int64
+	RequestsTotal        atomic.Int64
+	RequestsOK           atomic.Int64
+	RequestsErr          atomic.Int64
+	ProviderUploads      atomic.Int64
+	ProviderDownloads    atomic.Int64
+	ModuleUploads        atomic.Int64
+	ModuleDownloads      atomic.Int64
+	AuthFailures         atomic.Int64
+	RateLimitHits        atomic.Int64
+	ScanQueuedTotal      atomic.Int64
+	ScanCompletedTotal   atomic.Int64
+	ScanErrorTotal       atomic.Int64
+	ScanQueueDepth       atomic.Int64
+	ScanRunning          atomic.Int64
+	ScanFindingsCritical atomic.Int64
+	ScanFindingsHigh     atomic.Int64
+	ScanFindingsMedium   atomic.Int64
+	ScanFindingsLow      atomic.Int64
 
 	// Gauges (set directly)
 	startTime time.Time
@@ -35,34 +44,61 @@ func NewMetrics() *RegistryMetrics {
 
 // Snapshot returns a point-in-time metrics snapshot.
 type MetricsSnapshot struct {
-	Uptime            string `json:"uptime"`
-	UptimeSeconds     int64  `json:"uptime_seconds"`
-	RequestsTotal     int64  `json:"requests_total"`
-	RequestsOK        int64  `json:"requests_ok"`
-	RequestsErr       int64  `json:"requests_err"`
-	ProviderUploads   int64  `json:"provider_uploads"`
-	ProviderDownloads int64  `json:"provider_downloads"`
-	ModuleUploads     int64  `json:"module_uploads"`
-	ModuleDownloads   int64  `json:"module_downloads"`
-	AuthFailures      int64  `json:"auth_failures"`
-	RateLimitHits     int64  `json:"rate_limit_hits"`
+	Uptime             string        `json:"uptime"`
+	UptimeSeconds      int64         `json:"uptime_seconds"`
+	RequestsTotal      int64         `json:"requests_total"`
+	RequestsOK         int64         `json:"requests_ok"`
+	RequestsErr        int64         `json:"requests_err"`
+	ProviderUploads    int64         `json:"provider_uploads"`
+	ProviderDownloads  int64         `json:"provider_downloads"`
+	ModuleUploads      int64         `json:"module_uploads"`
+	ModuleDownloads    int64         `json:"module_downloads"`
+	AuthFailures       int64         `json:"auth_failures"`
+	RateLimitHits      int64         `json:"rate_limit_hits"`
+	ScanQueuedTotal    int64         `json:"scan_queued_total"`
+	ScanCompletedTotal int64         `json:"scan_completed_total"`
+	ScanErrorTotal     int64         `json:"scan_error_total"`
+	ScanQueueDepth     int64         `json:"scan_queue_depth"`
+	ScanRunning        int64         `json:"scan_running"`
+	ScanFindings       FindingCounts `json:"scan_findings"`
 }
 
 // Snapshot returns current metrics.
 func (m *RegistryMetrics) Snapshot() MetricsSnapshot {
 	uptime := time.Since(m.startTime)
 	return MetricsSnapshot{
-		Uptime:            uptime.Round(time.Second).String(),
-		UptimeSeconds:     int64(uptime.Seconds()),
-		RequestsTotal:     m.RequestsTotal.Load(),
-		RequestsOK:        m.RequestsOK.Load(),
-		RequestsErr:       m.RequestsErr.Load(),
-		ProviderUploads:   m.ProviderUploads.Load(),
-		ProviderDownloads: m.ProviderDownloads.Load(),
-		ModuleUploads:     m.ModuleUploads.Load(),
-		ModuleDownloads:   m.ModuleDownloads.Load(),
-		AuthFailures:      m.AuthFailures.Load(),
-		RateLimitHits:     m.RateLimitHits.Load(),
+		Uptime:             uptime.Round(time.Second).String(),
+		UptimeSeconds:      int64(uptime.Seconds()),
+		RequestsTotal:      m.RequestsTotal.Load(),
+		RequestsOK:         m.RequestsOK.Load(),
+		RequestsErr:        m.RequestsErr.Load(),
+		ProviderUploads:    m.ProviderUploads.Load(),
+		ProviderDownloads:  m.ProviderDownloads.Load(),
+		ModuleUploads:      m.ModuleUploads.Load(),
+		ModuleDownloads:    m.ModuleDownloads.Load(),
+		AuthFailures:       m.AuthFailures.Load(),
+		RateLimitHits:      m.RateLimitHits.Load(),
+		ScanQueuedTotal:    m.ScanQueuedTotal.Load(),
+		ScanCompletedTotal: m.ScanCompletedTotal.Load(),
+		ScanErrorTotal:     m.ScanErrorTotal.Load(),
+		ScanQueueDepth:     m.ScanQueueDepth.Load(),
+		ScanRunning:        m.ScanRunning.Load(),
+		ScanFindings:       FindingCounts{Critical: m.ScanFindingsCritical.Load(), High: m.ScanFindingsHigh.Load(), Medium: m.ScanFindingsMedium.Load(), Low: m.ScanFindingsLow.Load()},
+	}
+}
+
+func (m *RegistryMetrics) AddScanFindings(findings []Finding) {
+	for _, finding := range findings {
+		switch finding.Severity {
+		case SeverityCritical:
+			m.ScanFindingsCritical.Add(1)
+		case SeverityHigh:
+			m.ScanFindingsHigh.Add(1)
+		case SeverityMedium:
+			m.ScanFindingsMedium.Add(1)
+		case SeverityLow:
+			m.ScanFindingsLow.Add(1)
+		}
 	}
 }
 
@@ -146,6 +182,27 @@ terraform_registry_rate_limit_hits %d
 # HELP terraform_registry_uptime_seconds Uptime in seconds
 # TYPE terraform_registry_uptime_seconds gauge
 terraform_registry_uptime_seconds %d
+# HELP terraform_registry_scan_queue_depth Security scan jobs waiting
+# TYPE terraform_registry_scan_queue_depth gauge
+terraform_registry_scan_queue_depth %d
+# HELP terraform_registry_scan_queued_total Security scan jobs queued
+# TYPE terraform_registry_scan_queued_total counter
+terraform_registry_scan_queued_total %d
+# HELP terraform_registry_scan_running Security scans currently running
+# TYPE terraform_registry_scan_running gauge
+terraform_registry_scan_running %d
+# HELP terraform_registry_scan_completed_total Completed security scans
+# TYPE terraform_registry_scan_completed_total counter
+terraform_registry_scan_completed_total %d
+# HELP terraform_registry_scan_errors_total Failed security scans
+# TYPE terraform_registry_scan_errors_total counter
+terraform_registry_scan_errors_total %d
+# HELP terraform_registry_scan_findings_total Security findings observed by severity
+# TYPE terraform_registry_scan_findings_total counter
+terraform_registry_scan_findings_total{severity="critical"} %d
+terraform_registry_scan_findings_total{severity="high"} %d
+terraform_registry_scan_findings_total{severity="medium"} %d
+terraform_registry_scan_findings_total{severity="low"} %d
 `,
 		snap.RequestsTotal,
 		snap.RequestsOK,
@@ -157,6 +214,15 @@ terraform_registry_uptime_seconds %d
 		snap.AuthFailures,
 		snap.RateLimitHits,
 		snap.UptimeSeconds,
+		snap.ScanQueueDepth,
+		snap.ScanQueuedTotal,
+		snap.ScanRunning,
+		snap.ScanCompletedTotal,
+		snap.ScanErrorTotal,
+		snap.ScanFindings.Critical,
+		snap.ScanFindings.High,
+		snap.ScanFindings.Medium,
+		snap.ScanFindings.Low,
 	)
 }
 
