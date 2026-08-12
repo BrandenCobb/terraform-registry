@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -126,6 +127,118 @@ func TestSecurityOverviewRedactsDetailsButRetainsCountsAndFilters(t *testing.T) 
 	}
 	if item.Summary.Counts.Critical != 1 {
 		t.Fatalf("expected aggregate count, got %+v", item.Summary.Counts)
+	}
+}
+
+func TestSecuritySummaryAggregatesCompleteInventory(t *testing.T) {
+	r, _, dir := setupTestEnv(t)
+	defer cleanupTestEnv(dir)
+	scanConfig = ScanConfig{Enabled: true, Mode: ScanModeEnforce, StaleAfter: time.Hour}
+	scanRepo, _ = NewScanRepository(dir)
+	now := time.Now().UTC()
+	for i, record := range []*ScanRecord{
+		{Digest: string(bytes.Repeat([]byte{'1'}, 64)), Kind: ArtifactProvider, Status: ScanClean, PolicyResult: PolicyAllow, CompletedAt: now},
+		{Digest: string(bytes.Repeat([]byte{'2'}, 64)), Kind: ArtifactModule, Status: ScanFindings, PolicyResult: PolicyDeny, CompletedAt: now, Findings: []Finding{{ID: "critical", Severity: SeverityCritical}, {ID: "low", Severity: SeverityLow}}},
+		{Digest: string(bytes.Repeat([]byte{'3'}, 64)), Kind: ArtifactProvider, Status: ScanScanning, PolicyResult: PolicyDeny},
+	} {
+		record.ID = fmt.Sprintf("summary-%d", i)
+		if err := scanRepo.Save(record, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/security/summary", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Data SecurityInventorySummary `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Total != 3 || response.Data.Clean != 1 || response.Data.Findings != 1 || response.Data.Active != 1 || response.Data.Blocked != 2 {
+		t.Fatalf("unexpected summary: %+v", response.Data)
+	}
+	if response.Data.Counts.Critical != 1 || response.Data.Counts.Low != 1 {
+		t.Fatalf("unexpected finding counts: %+v", response.Data.Counts)
+	}
+	if response.Data.Mode != ScanModeEnforce || !response.Data.Enabled {
+		t.Fatalf("missing policy context: %+v", response.Data)
+	}
+}
+
+func TestSecuritySummaryUsesLivePolicy(t *testing.T) {
+	r, _, dir := setupTestEnv(t)
+	defer cleanupTestEnv(dir)
+	digest := string(bytes.Repeat([]byte{'4'}, 64))
+	scanConfig = ScanConfig{Enabled: true, Mode: ScanModeVisibility, StaleAfter: time.Hour}
+	scanRepo, _ = NewScanRepository(dir)
+	waiverRepo, _ = NewWaiverRepository(dir)
+	record := &ScanRecord{ID: "live-policy", Digest: digest, Kind: ArtifactProvider, Status: ScanFindings, PolicyResult: PolicyDeny, CompletedAt: time.Now().UTC(), Findings: []Finding{{ID: "critical", Severity: SeverityCritical}}}
+	if err := scanRepo.Save(record, nil); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/security/summary", nil))
+	var response struct {
+		Data SecurityInventorySummary `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Blocked != 0 {
+		t.Fatalf("visibility mode must report live allow policy, got %+v", response.Data)
+	}
+}
+
+func TestSecurityOverviewReportsLivePolicy(t *testing.T) {
+	r, _, dir := setupTestEnv(t)
+	defer cleanupTestEnv(dir)
+	digest := string(bytes.Repeat([]byte{'5'}, 64))
+	scanConfig = ScanConfig{Enabled: true, Mode: ScanModeVisibility, StaleAfter: time.Hour}
+	scanRepo, _ = NewScanRepository(dir)
+	waiverRepo, _ = NewWaiverRepository(dir)
+	if err := scanRepo.Save(&ScanRecord{ID: "overview-policy", Digest: digest, Kind: ArtifactProvider, Status: ScanFindings, PolicyResult: PolicyDeny, CompletedAt: time.Now().UTC(), Findings: []Finding{{ID: "critical", Severity: SeverityCritical}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/security/scans", nil))
+	var response struct {
+		Data struct {
+			Items []ScanRecord `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data.Items) != 1 || response.Data.Items[0].PolicyResult != PolicyAllow {
+		t.Fatalf("overview must expose effective policy, got %+v", response.Data.Items)
+	}
+}
+
+func TestSecurityDetailReportsLivePolicy(t *testing.T) {
+	r, _, dir := setupTestEnv(t)
+	defer cleanupTestEnv(dir)
+	digest := string(bytes.Repeat([]byte{'6'}, 64))
+	scanConfig = ScanConfig{Enabled: true, Mode: ScanModeVisibility, StaleAfter: time.Hour}
+	scanRepo, _ = NewScanRepository(dir)
+	waiverRepo, _ = NewWaiverRepository(dir)
+	if err := scanRepo.Save(&ScanRecord{ID: "detail-policy", Digest: digest, Kind: ArtifactProvider, Status: ScanFindings, PolicyResult: PolicyDeny, CompletedAt: time.Now().UTC()}, nil); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/security/scans/"+digest, nil))
+	var response struct {
+		Data struct {
+			Scan ScanRecord `json:"scan"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Scan.PolicyResult != PolicyAllow {
+		t.Fatalf("detail must expose effective policy, got %+v", response.Data.Scan)
 	}
 }
 

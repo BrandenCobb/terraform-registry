@@ -258,6 +258,7 @@ func main() {
 	api.HandleFunc("/gc", gcHandler).Methods("POST")
 	api.HandleFunc("/security/scans", securityScansHandler).Methods("GET")
 	api.HandleFunc("/security/health", securityHealthHandler).Methods("GET")
+	api.HandleFunc("/security/summary", securitySummaryHandler).Methods("GET")
 	api.HandleFunc("/security/scans/{digest}", securityScanDetailHandler).Methods("GET")
 	api.HandleFunc("/security/scans/{digest}/history", securityScanHistoryHandler).Methods("GET")
 	api.HandleFunc("/security/scans/{digest}/reports/{scanID}", securityRawReportHandler).Methods("GET")

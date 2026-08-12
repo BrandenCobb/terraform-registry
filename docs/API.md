@@ -79,6 +79,7 @@ Success is `204 No Content` with `X-Terraform-Get` pointing to the module archiv
 | DELETE | `/api/v1/modules/{namespace}/{name}/{provider}/{version}` | admin | Delete version |
 | POST | `/api/v1/gc` | admin | Remove stale temporary files |
 | GET | `/api/v1/security/health` | public | Scanner enablement, mode, readiness, queue depth |
+| GET | `/api/v1/security/summary` | public | Complete-inventory status, policy, blocking, and severity aggregates |
 | GET | `/api/v1/security/scans` | public | Paginated status-only security overview |
 | GET | `/api/v1/security/scans/{digest}` | read | Current detail, findings, policy explanation, active waivers |
 | GET | `/api/v1/security/scans/{digest}/history` | read | Digest-bound scan history |

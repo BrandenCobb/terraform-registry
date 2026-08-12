@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A responsive enterprise command center with registry posture scoring, live scanner health, complete-inventory security summaries, catalog search, scan filtering, and safe DOM-only artifact rendering.
+
+### Changed
+- Scanner images cross-compile registry and Trivy binaries on the native BuildKit host platform, avoiding slow QEMU compilation during multi-architecture releases.
+- Publishing, artifact detail, finding detail, and security workflows now use a consistent dark developer-security design system with accessible text status indicators and reduced-motion support.
+
 ## [2.2.0] - 2026-08-12
 
 ### Added
@@ -117,5 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CGO disabled for static binaries
 - Multi-stage Docker builds for small images
 
-[Unreleased]: https://github.com/BrandenCobb/terraform-registry/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/BrandenCobb/terraform-registry/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v2.2.0
+[2.1.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v2.1.0
 [1.0.0]: https://github.com/BrandenCobb/terraform-registry/releases/tag/v1.0.0
