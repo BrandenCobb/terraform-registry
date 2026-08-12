@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: terraform-registry
+  namespace: terraform-registry
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: terraform-registry
+  template:
+    metadata:
+      labels:
+        app: terraform-registry
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: terraform-registry-data
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+      containers:
+        - name: registry
+          image: ghcr.io/brandencobb/terraform-registry-scanner:v2.2.0
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BASE_URL
+              value: https://terraform-registry.internal.example.com
+            - name: REGISTRY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: terraform-registry-bootstrap
+                  key: api-key
+            - name: SCANNING_ENABLED
+              value: "true"
+            - name: SCAN_MODE
+              value: visibility
+            - name: SCAN_WORKERS
+              value: "1"
+            - name: TRIVY_CACHE_DIR
+              value: /var/lib/terraform-registry/trivy-cache
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/terraform-registry
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /api/v1/security/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

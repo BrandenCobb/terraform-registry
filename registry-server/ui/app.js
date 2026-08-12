@@ -3,6 +3,7 @@
     'use strict';
 
     const API_BASE = '/api/v1';
+    let securityAPIKey = '';
 
     // Tab navigation
     document.querySelectorAll('.nav-links a').forEach(link => {
@@ -22,6 +23,7 @@
         if (tab === 'dashboard') loadStats();
         if (tab === 'providers') loadProviders();
         if (tab === 'modules') loadModules();
+        if (tab === 'security') loadSecurity();
         if (tab === 'upload') toggleUploadFields();
     }
 
@@ -45,6 +47,84 @@
             document.getElementById('stat-module-versions').textContent = resp.data.module_versions;
         }
         document.getElementById('registry-url').textContent = window.location.origin;
+    }
+
+    const statusPresentation = {
+        findings: ['🟡', 'Warning / Findings'], clean: ['🟢', 'Clean'],
+        queued: ['🔵', 'Queued'], scanning: ['🔵', 'Scanning'],
+        error: ['⚪', 'Scan Error'], stale: ['⚪', 'Stale'], disabled: ['⚪', 'Unknown']
+    };
+
+    function addText(parent, tag, className, text) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        element.textContent = text == null ? '' : String(text);
+        parent.appendChild(element);
+        return element;
+    }
+
+    async function loadSecurity() {
+        const container = document.getElementById('security-list');
+        container.replaceChildren(); addText(container, 'div', 'loading', 'Loading scan results...');
+        const params = new URLSearchParams({ limit: '100' });
+        const status = document.getElementById('security-status').value;
+        const kind = document.getElementById('security-kind').value;
+        if (status) params.set('status', status); if (kind) params.set('kind', kind);
+        const response = await api(`/security/scans?${params}`);
+        const items = response.success && response.data ? (response.data.items || []) : [];
+        renderSecurityStats(items); container.replaceChildren();
+        if (!items.length) { addText(container, 'div', 'empty-state', response.success ? 'No scan results match these filters.' : (response.message || 'Unable to load scans.')); return; }
+        items.forEach(record => container.appendChild(scanCard(record)));
+    }
+
+    function renderSecurityStats(items) {
+        const counts = { findings: 0, clean: 0, scanning: 0, unknown: 0 };
+        items.forEach(item => { if (item.status === 'queued' || item.status === 'scanning') counts.scanning++; else if (item.status === 'findings') counts.findings++; else if (item.status === 'clean') counts.clean++; else counts.unknown++; });
+        const grid = document.getElementById('security-stats'); grid.replaceChildren();
+        [['🟡 Findings', counts.findings], ['🟢 Clean', counts.clean], ['🔵 In Progress', counts.scanning], ['⚪ Unknown / Error', counts.unknown]].forEach(([label, value]) => {
+            const card = document.createElement('div'); card.className = 'stat-card'; addText(card, 'div', 'stat-value', value); addText(card, 'div', 'stat-label', label); grid.appendChild(card);
+        });
+    }
+
+    function scanCard(record) {
+        const card = document.createElement('button'); card.type = 'button'; card.className = 'artifact-card security-card';
+        const left = document.createElement('div'); const identity = [record.namespace, record.name, record.provider].filter(Boolean).join('/');
+        addText(left, 'div', 'artifact-name', `${identity || record.kind} ${record.version || ''}`.trim());
+        addText(left, 'div', 'artifact-meta', `${record.platform || record.kind} · ${record.scanner || 'scanner'} · ${record.digest.slice(0, 12)}…`);
+        let presentation = statusPresentation[record.status] || ['⚪', 'Unknown'];
+        if (record.status === 'findings' && record.policy_result === 'deny') presentation = ['🔴', 'Critical / Blocked'];
+        addText(left, 'span', `scan-badge scan-${record.policy_result === 'deny' ? 'blocked' : (record.status || 'disabled')}`, `${presentation[0]} ${presentation[1]}`);
+        const counts = record.summary && record.summary.counts ? record.summary.counts : {}; const total = Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0); addText(left, 'span', 'artifact-meta finding-count', `${total} finding${total === 1 ? '' : 's'}`);
+        card.appendChild(left); card.addEventListener('click', () => showScanDetail(record.digest)); return card;
+    }
+
+    async function showScanDetail(digest) {
+        if (!securityAPIKey) securityAPIKey = prompt('Read-capable API key for detailed security data:') || '';
+        if (!securityAPIKey) return;
+        const response = await api(`/security/scans/${encodeURIComponent(digest)}`, { headers: { 'X-API-Key': securityAPIKey } });
+        if (!response.success) { alert(response.message || 'Unable to load scan details.'); securityAPIKey = ''; return; }
+        const record = response.data.scan; const body = document.getElementById('modal-body'); body.replaceChildren();
+        addText(body, 'div', 'modal-title', 'Security scan details'); let presentation = statusPresentation[record.status] || ['⚪', 'Unknown'];
+        if (record.status === 'findings' && record.policy_result === 'deny') presentation = ['🔴', 'Critical / Blocked'];
+        addText(body, 'div', `scan-badge scan-${record.policy_result === 'deny' ? 'blocked' : (record.status || 'disabled')}`, `${presentation[0]} ${presentation[1]}`);
+        addText(body, 'p', 'artifact-meta', `Digest ${record.digest} · ${record.scanner || 'unknown scanner'} · ${record.completed_at ? new Date(record.completed_at).toLocaleString() : 'not completed'}`);
+        const table = document.createElement('div'); table.className = 'findings-table';
+        (record.findings || []).forEach(finding => { const row = document.createElement('article'); row.className = `finding-row severity-${finding.severity || 'unknown'}`; addText(row, 'strong', '', `${String(finding.severity || 'unknown').toUpperCase()} · ${finding.id || 'Finding'}`); addText(row, 'div', '', finding.title || finding.description || 'No description provided'); addText(row, 'small', 'artifact-meta', [finding.file, finding.start_line && `line ${finding.start_line}`, finding.resource || finding.package].filter(Boolean).join(' · ')); table.appendChild(row); });
+        if (!(record.findings || []).length) addText(table, 'div', 'empty-state', 'No normalized findings.'); body.appendChild(table);
+        const actions = document.createElement('div'); actions.className = 'security-actions'; const raw = document.createElement('button'); raw.type = 'button'; raw.className = 'btn'; raw.textContent = 'Download raw JSON'; raw.addEventListener('click', () => downloadRawReport(digest, record.id)); actions.appendChild(raw);
+        const rescan = document.createElement('button'); rescan.type = 'button'; rescan.className = 'btn btn-primary'; rescan.textContent = 'Rescan'; rescan.addEventListener('click', () => requestRescan(digest)); actions.appendChild(rescan); body.appendChild(actions); document.getElementById('detail-modal').style.display = 'flex';
+    }
+
+    async function downloadRawReport(digest, scanID) {
+        const response = await fetch(`${API_BASE}/security/scans/${encodeURIComponent(digest)}/reports/${encodeURIComponent(scanID)}`, { headers: { 'X-API-Key': securityAPIKey } });
+        if (!response.ok) { alert('Unable to download raw report.'); return; }
+        const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `scan-${scanID}.json`; link.click(); URL.revokeObjectURL(url);
+    }
+
+    async function requestRescan(digest) {
+        const apiKey = prompt('Admin/write API key:'); if (!apiKey) return;
+        const response = await api(`/security/scans/${encodeURIComponent(digest)}/rescan`, { method: 'POST', headers: { 'X-API-Key': apiKey } });
+        alert(response.message || (response.success ? 'Rescan queued.' : 'Unable to queue rescan.')); if (response.success) { closeModal(); loadSecurity(); }
     }
 
     // Providers
@@ -245,6 +325,9 @@
     // Initial load
     document.getElementById('upload-type').addEventListener('change', toggleUploadFields);
     document.getElementById('upload-button').addEventListener('click', doUpload);
+    document.getElementById('security-refresh').addEventListener('click', loadSecurity);
+    document.getElementById('security-status').addEventListener('change', loadSecurity);
+    document.getElementById('security-kind').addEventListener('change', loadSecurity);
     document.getElementById('modal-close').addEventListener('click', closeModal);
     loadStats();
 

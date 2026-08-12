@@ -21,6 +21,20 @@ curl -fsS https://registry.example.com/health
 
 The included Compose file uses a named volume, a non-root user, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`.
 
+### Scanner-enabled deployment
+
+Use the scanner image overlay and begin in visibility mode:
+
+```bash
+export SCAN_MODE=visibility
+docker compose -f docker-compose.yml -f docker-compose.scanning.yml up -d
+curl -fsS https://registry.example.com/api/v1/security/health
+```
+
+The scanner image contains Trivy and Checkov, runs them without executing provider binaries, and requires no Docker socket. Give `/tmp` enough ephemeral capacity for extracted artifacts and keep `/var/lib/terraform-registry/trivy-cache` on the persistent volume. Use `examples/kubernetes/k3s/deployment-scanning.yaml` for a hardened Kubernetes starting point.
+
+Existing artifacts are backfilled asynchronously and remain unknown until scanned. Keep `SCAN_MODE=visibility` through migration. Switch to `quarantine` or `enforce` only after the queue drains and required waivers exist; blocking modes fail closed for unknown, stale, errored, and denied artifacts.
+
 ## Kubernetes
 
 Apply the manifests in `examples/kubernetes/k3s` after replacing the image tag, `BASE_URL`, storage class, ingress hostname, and secret values.
@@ -85,6 +99,10 @@ Alert on:
 - elevated `terraform_registry_rate_limit_hits`
 - persistent-volume capacity/inode pressure
 - restart loops and webhook delivery warnings
+- persistent `terraform_registry_scan_queue_depth`
+- elevated `terraform_registry_scan_errors_total`
+- scanner readiness failures from `/api/v1/security/health`
+- stale or unknown artifacts reported by the security dashboard
 
 ## TLS
 

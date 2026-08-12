@@ -77,6 +77,37 @@ jobs:
           exit-code: '1'
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+      - name: Build scanner-enabled image
+        run: docker build -f Dockerfile.scanner --build-arg VERSION=ci -t terraform-registry-scanner:test .
+      - name: Scan scanner-enabled image
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
+        with:
+          image-ref: terraform-registry-scanner:test
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - name: Scanner image smoke test
+        run: |
+          docker volume create terraform-registry-scanner-test-data
+          docker run -d --name terraform-registry-scanner --read-only --user 65534:65534 \
+            --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:size=1g,mode=1777 \
+            -p 5502:8080 -v terraform-registry-scanner-test-data:/var/lib/terraform-registry \
+            -e BASE_URL=http://localhost:5502 -e REGISTRY_API_KEY=scanner-secret \
+            -e SCANNING_ENABLED=true -e SCAN_MODE=visibility terraform-registry-scanner:test
+          timeout 45 bash -c 'until curl -fsS http://localhost:5502/api/v1/security/health | jq -e ".data.enabled and .data.ready"; do sleep 1; done'
+          docker exec terraform-registry-scanner trivy --version
+          docker exec terraform-registry-scanner checkov --version
+          mkdir scanner-fixture
+          printf '%s\n' 'resource "aws_security_group" "bad" {' ' ingress { from_port=0 to_port=0 protocol="-1" cidr_blocks=["0.0.0.0/0"] }' '}' > scanner-fixture/main.tf
+          set +e
+          docker run --rm --user 65534:65534 --entrypoint checkov \
+            -v "$PWD/scanner-fixture:/src:ro" terraform-registry-scanner:test \
+            -d /src --framework terraform -o json --quiet --compact > scanner-report.json
+          code=$?
+          set -e
+          test "$code" = 1
+          jq -e '.summary.failed > 0 and .summary.parsing_errors == 0' scanner-report.json
       - name: Start registry
         run: |
           docker volume create terraform-registry-test-data
@@ -117,4 +148,6 @@ jobs:
         run: docker logs terraform-registry || true
       - name: Cleanup
         if: always()
-        run: docker rm -f terraform-registry || true
+        run: |
+          docker rm -f terraform-registry terraform-registry-scanner || true
+          docker volume rm terraform-registry-test-data terraform-registry-scanner-test-data || true

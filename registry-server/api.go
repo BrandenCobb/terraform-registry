@@ -260,6 +260,11 @@ func uploadProviderHandler(w http.ResponseWriter, r *http.Request) {
 			_ = store.Delete(oldKey)
 		}
 	}
+	if scanner != nil {
+		if _, err := scanner.Enqueue(ScanJob{Digest: shasum, Kind: ArtifactProvider, ArtifactKey: zipKey, Namespace: namespace, Name: name, Version: version, Platform: osName + "/" + arch}, false); err != nil {
+			logger.Error("provider security scan enqueue failed", "digest", shasum, "error", err)
+		}
+	}
 
 	// Notify webhooks
 	webhooks.Notify("publish", WebhookPayload{
@@ -496,6 +501,12 @@ func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 		var oldMeta ModuleArtifactMeta
 		if json.Unmarshal(previousMeta, &oldMeta) == nil && oldMeta.Filename != "" && oldMeta.Filename != filename {
 			_ = store.Delete(prefix + "/" + oldMeta.Filename)
+		}
+	}
+	shasum := fmt.Sprintf("%x", h.Sum(nil))
+	if scanner != nil {
+		if _, err := scanner.Enqueue(ScanJob{Digest: shasum, Kind: ArtifactModule, ArtifactKey: key, Namespace: namespace, Name: name, Provider: provider, Version: version}, false); err != nil {
+			logger.Error("module security scan enqueue failed", "digest", shasum, "error", err)
 		}
 	}
 
