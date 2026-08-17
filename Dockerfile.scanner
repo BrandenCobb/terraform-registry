@@ -25,7 +25,7 @@ RUN go get github.com/go-git/go-git/v5@v5.19.2 oras.land/oras-go/v2@v2.6.2 golan
     go mod tidy && GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
         -ldflags="-w -s -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.73.0" \
         -o /trivy ./cmd/trivy
-FROM bridgecrew/checkov@sha256:12a62da01af22654883aee3b9da18ba4297f123f5122663bf65235db37934144
+FROM bridgecrew/checkov@sha256:e5e308e713725e73f517e4cb85b39d467f1e047204c174fb15eb444c27ffb745
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.source="https://github.com/BrandenCobb/terraform-registry" \
