@@ -66,6 +66,16 @@ docker-compose up -d
 | `MAX_UPLOAD_MB` | `500` | Maximum upload size in MB |
 | `LOG_LEVEL` | `info` | `info` or `debug` |
 | `WEBHOOK_CONFIG` | (empty) | Path to webhook config JSON |
+| `SCANNING_ENABLED` | `false` | Enable durable asynchronous artifact scanning |
+| `SCAN_MODE` | `visibility` | `visibility`, `quarantine`, or `enforce` |
+| `SCAN_WORKERS` | `1` | Concurrent scanner workers (1-16) |
+| `SCAN_TIMEOUT` | `15m` | Per-artifact scanner timeout |
+| `SCAN_STALE_AFTER` | `168h` | Age after which completed results become stale |
+| `SCAN_INTERVAL` | `1h` | Scheduled stale/error rescan interval |
+| `SCAN_DENY_SEVERITIES` | `critical,high` | Severities producing policy denial |
+| `SCAN_OFFLINE` | `false` | Disable Trivy DB updates; preload/persist cache for air-gapped use |
+| `TRIVY_PATH` / `CHECKOV_PATH` | `trivy` / `checkov` | Scanner executable paths in the scanner image |
+| `TRIVY_CACHE_DIR` | (empty) | Persistent Trivy vulnerability database cache |
 
 ## API Keys (RBAC)
 
@@ -115,12 +125,15 @@ Terraform protocol endpoints are always public (no auth needed for `terraform in
 - `DELETE /api/v1/modules/{ns}/{name}/{provider}/{ver}` — Delete (admin)
 - `POST /api/v1/modules/{ns}/{name}/{provider}/{ver}/deprecate` — Deprecate
 - `POST /api/v1/gc` — Trigger garbage collection (admin)
+- `GET /api/v1/security/health` — Scanner enablement, mode, readiness, queue depth
+- `GET /api/v1/security/summary` — Complete-inventory status/policy/severity aggregates for the command center
 - `GET /api/v1/security/scans` — Public redacted security overview
 - `GET /api/v1/security/scans/{digest}` — Authenticated findings/detail
 - `GET /api/v1/security/scans/{digest}/history` — Authenticated history
 - `GET /api/v1/security/scans/{digest}/reports/{scanID}` — Authenticated raw report
 - `POST /api/v1/security/scans/{digest}/rescan` — Manual rescan (write)
 - `POST /api/v1/security/scans/{digest}/waivers` — Expiring waiver (admin)
+- `DELETE /api/v1/security/waivers/{waiverID}` — Revoke waiver (admin)
 
 ### Operations
 - `GET /health` — Health check (JSON)
@@ -134,6 +147,8 @@ File-level mutex prevents concurrent writes to same artifact.
 Hourly GC cleans orphaned temp files. Graceful shutdown on SIGTERM/SIGINT.
 
 Run exactly one registry process per filesystem volume. Scanning is optional and filesystem-backed: provider ZIPs use Trivy, module archives use Checkov, and artifacts are never executed. Begin upgrades in `SCAN_MODE=visibility`; `quarantine`/`enforce` fail closed for unknown, queued, scanning, errored, stale, or policy-denied digests. Persist the complete storage volume (including scan history and waivers) and the Trivy cache; scanner workspaces remain disposable under `/tmp`.
+
+**Security/command-center notes (2026-08-12, v2.3.0):** `/ui` is now the enterprise command center, not a basic CRUD dashboard. It depends on `/api/v1/security/summary` for complete-inventory posture scoring and policy-blocked counts because `/security/scans?limit=100` is only a paginated overview. Keep security UI rendering DOM-only (no report HTML injection), and keep color paired with text labels for accessibility. Scanner Docker builds intentionally cross-compile the registry and Trivy binaries on the native BuildKit host platform to avoid slow QEMU compilation during multi-architecture releases.
 
 ```yaml
 # Kubernetes PVC

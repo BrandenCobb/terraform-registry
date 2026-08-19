@@ -2,7 +2,7 @@
 
 ## Setup
 
-Requirements: Go 1.26.5+, Docker with Compose, GNU Make, and Git.
+Requirements: Go 1.26.6+, Docker with Compose, GNU Make, and Git.
 
 ```bash
 git clone https://github.com/BrandenCobb/terraform-registry.git
