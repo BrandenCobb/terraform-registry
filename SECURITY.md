@@ -43,7 +43,7 @@ CI runs `govulncheck`, `gosec`, and a blocking Trivy scan. Local equivalents:
 
 ```bash
 make security-scan
-trivy image ghcr.io/brandencobb/terraform-registry:v2.3.0
+trivy image ghcr.io/brandencobb/terraform-registry:v2.3.1
 ```
 
 The release image is built with a patched Go toolchain and pinned Alpine release. Continue rebuilding releases as base-image and standard-library fixes become available.

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-08-19
+
+### Security
+- Updated CI, release, and container builds to Go 1.26.6, resolving reachable standard-library vulnerabilities detected by `govulncheck`.
+- Upgraded Debian security packages in the scanner image so fixed HIGH-severity `util-linux` updates are present in the final runtime.
+
+### Changed
+- Refreshed pinned GitHub Actions, Alpine, Go builder, and Checkov 3.3.11 base-image dependencies.
+- Added a maintained project roadmap separating patch maintenance from reliability, scale, and identity work.
+
 ## [2.3.0] - 2026-08-12
 
 ### Added

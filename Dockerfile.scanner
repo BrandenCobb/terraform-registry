@@ -25,20 +25,23 @@ RUN go get github.com/go-git/go-git/v5@v5.19.2 oras.land/oras-go/v2@v2.6.2 golan
     go mod tidy && GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
         -ldflags="-w -s -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.73.0" \
         -o /trivy ./cmd/trivy
-FROM bridgecrew/checkov@sha256:e5e308e713725e73f517e4cb85b39d467f1e047204c174fb15eb444c27ffb745
+FROM bridgecrew/checkov:3.3.11@sha256:e5e308e713725e73f517e4cb85b39d467f1e047204c174fb15eb444c27ffb745
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.source="https://github.com/BrandenCobb/terraform-registry" \
       org.opencontainers.image.description="Terraform registry with isolated-workspace Trivy and Checkov artifact scanning" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
-      io.terraform-registry.scanners="trivy=0.73.0,checkov=3.3.9"
+      io.terraform-registry.scanners="trivy=0.73.0,checkov=3.3.11"
 
 USER root
 COPY --from=builder --chown=65534:65534 /app/terraform-registry /app/terraform-registry
 COPY --from=builder /app/tfreg /usr/local/bin/tfreg
 COPY --from=trivy-builder /trivy /usr/local/bin/trivy
-RUN python3 -m pip install --no-cache-dir --upgrade \
+RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
+    python3 -m pip install --no-cache-dir --upgrade \
         'setuptools>=82.0.0' 'GitPython>=3.1.58' 'aiohttp>=3.14.3,<3.15' \
         'jaraco.context>=6.1.0' 'packaging>=24,<27' 'urllib3>=2.7.0' 'wheel>=0.46.2' && \
     python3 -c 'from importlib.metadata import distribution; p=distribution("checkov")._path/"METADATA"; s=p.read_text(); s=s.replace("Requires-Dist: aiohttp<3.14.0,>=3.8.0", "Requires-Dist: aiohttp<3.15,>=3.14.3"); s=s.replace("Requires-Dist: packaging<24.0,>=23.0", "Requires-Dist: packaging<27,>=24"); p.write_text(s)' && \

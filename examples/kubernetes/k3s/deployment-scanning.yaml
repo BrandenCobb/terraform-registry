@@ -32,7 +32,7 @@ spec:
             sizeLimit: 1Gi
       containers:
         - name: registry
-          image: ghcr.io/brandencobb/terraform-registry-scanner:v2.3.0
+          image: ghcr.io/brandencobb/terraform-registry-scanner:v2.3.1
           ports:
             - name: http
               containerPort: 8080
