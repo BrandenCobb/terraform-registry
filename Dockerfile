@@ -23,7 +23,8 @@ LABEL org.opencontainers.image.source="https://github.com/BrandenCobb/terraform-
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}"
 
-RUN apk --no-cache add ca-certificates && \
+RUN apk --no-cache upgrade && \
+    apk --no-cache add ca-certificates && \
     mkdir -p /var/lib/terraform-registry/providers /var/lib/terraform-registry/modules /var/lib/terraform-registry/tmp && \
     chown -R nobody:nobody /var/lib/terraform-registry
 
