@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS builder
 
 ARG VERSION=dev
 ARG TARGETOS=linux
@@ -18,7 +18,7 @@ RUN cd cmd/tfreg && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build
 # Trivy v0.73.0 pins `go 1.26.3` and builds against the pre-1.27 `encoding/json/v2`
 # experiment (it relies on `json.SkipFunc`, removed in Go 1.27). Keep this stage on
 # 1.26.x until a Trivy release compatible with Go 1.27 is available.
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS trivy-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS trivy-builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN apk add --no-cache git
