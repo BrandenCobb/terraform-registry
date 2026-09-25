@@ -59,4 +59,17 @@ aws ecr get-login-password --region us-east-1 | \
 
 The ECR repository must already exist. OCI stores a portable copy of the exact package; Terraform clients still use the Terraform registry protocol endpoint.
 
+## 6. Restore from OCI/ECR
+
+The artifact identity is read from the validated OCI manifest, and the restored package enters the same validation, storage, quarantine, and scanning path as a direct upload:
+
+```bash
+aws ecr get-login-password --region us-east-1 | \
+  tfreg import \
+    --oci-ref 123456789012.dkr.ecr.us-east-1.amazonaws.com/terraform/modules/acme/vpc/aws:1.0.0 \
+    --oci-username AWS --oci-password-stdin
+```
+
+Use a manifest digest instead of a tag when an immutable restore is required. In the default `quarantine` mode, Terraform cannot download the imported package until Trivy or Checkov returns an allowed result.
+
 For production TLS, RBAC key files, waivers, backups, Kubernetes, and complete API semantics, see the root [`README.md`](../README.md), [`CONFIGURATION.md`](CONFIGURATION.md), and [`DEPLOYMENT.md`](DEPLOYMENT.md).

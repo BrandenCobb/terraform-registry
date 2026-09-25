@@ -92,26 +92,22 @@ func packOCIArtifact(ctx context.Context, target oras.Target, artifactPath, kind
 	})
 }
 
-func pushOCIArtifact(ctx context.Context, opts ociPushOptions) (ocispec.Descriptor, error) {
-	repository, tag, err := splitOCIReference(opts.Reference)
-	if err != nil {
-		return ocispec.Descriptor{}, err
-	}
+func openOCIRepository(repository, username, password string, plainHTTP bool) (*remote.Repository, error) {
 	repo, err := remote.NewRepository(repository)
 	if err != nil {
-		return ocispec.Descriptor{}, fmt.Errorf("open OCI repository: %w", err)
+		return nil, fmt.Errorf("open OCI repository: %w", err)
 	}
-	repo.PlainHTTP = opts.PlainHTTP
+	repo.PlainHTTP = plainHTTP
 	credentialFunc := auth.CredentialFunc(nil)
-	if opts.Username != "" || opts.Password != "" {
+	if username != "" || password != "" {
 		credentialFunc = auth.StaticCredential(repo.Reference.Registry, auth.Credential{
-			Username: opts.Username,
-			Password: opts.Password,
+			Username: username,
+			Password: password,
 		})
 	} else {
 		credentialStore, storeErr := credentials.NewStoreFromDocker(credentials.StoreOptions{})
 		if storeErr != nil {
-			return ocispec.Descriptor{}, fmt.Errorf("open Docker credential store: %w", storeErr)
+			return nil, fmt.Errorf("open Docker credential store: %w", storeErr)
 		}
 		credentialFunc = credentials.Credential(credentialStore)
 	}
@@ -119,6 +115,18 @@ func pushOCIArtifact(ctx context.Context, opts ociPushOptions) (ocispec.Descript
 		Client:     retry.DefaultClient,
 		Cache:      auth.NewCache(),
 		Credential: credentialFunc,
+	}
+	return repo, nil
+}
+
+func pushOCIArtifact(ctx context.Context, opts ociPushOptions) (ocispec.Descriptor, error) {
+	repository, tag, err := splitOCIReference(opts.Reference)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+	repo, err := openOCIRepository(repository, opts.Username, opts.Password, opts.PlainHTTP)
+	if err != nil {
+		return ocispec.Descriptor{}, err
 	}
 	manifest, err := packOCIArtifact(ctx, repo, opts.Artifact, opts.Kind, opts.Annotations)
 	if err != nil {

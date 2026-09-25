@@ -8,7 +8,7 @@ The current release line is a filesystem-backed, single-writer Terraform provide
 - Module registry protocol
 - Non-root container with persistent-volume support
 - `tfreg` one-command source publishing for providers/modules, plus package, pull, list, and delete workflows
-- OCI 1.1 artifact copies for ECR and other OCI registries, with Docker credential-store or password-stdin authentication
+- OCI 1.1 artifact export and validated import for ECR and other OCI registries, with Docker credential-store or password-stdin authentication
 - Continuous Trivy/Checkov scanning, quarantine enforcement, waivers, and scheduled rescans in the default Compose deployment
 - RBAC API keys for management mutations
 - Streaming/atomic artifacts, checksums, deprecation, metrics, audit logs, and webhooks
