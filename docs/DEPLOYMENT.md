@@ -14,26 +14,22 @@
 ```bash
 export BASE_URL=https://registry.example.com
 export REGISTRY_API_KEY="$(openssl rand -hex 32)"
-docker compose pull
-docker compose up -d
+docker compose up -d --build
 curl -fsS https://registry.example.com/health
 ```
 
-The included Compose file uses a named volume, a non-root user, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`.
+The included Compose file uses the scanner-enabled image, a named volume, a non-root user, a read-only root filesystem, no Linux capabilities, and `no-new-privileges`. New and existing artifacts are scanned continuously; the default `quarantine` mode fails closed for unknown, stale, errored, and policy-denied artifacts.
 
-### Scanner-enabled deployment
+### Existing-registry migration
 
-Use the scanner image overlay and begin in visibility mode:
+For a volume that already contains artifacts, begin in visibility mode:
 
 ```bash
-export SCAN_MODE=visibility
-docker compose -f docker-compose.yml -f docker-compose.scanning.yml up -d
+SCAN_MODE=visibility docker compose up -d
 curl -fsS https://registry.example.com/api/v1/security/health
 ```
 
-The scanner image contains Trivy and Checkov, runs them without executing provider binaries, and requires no Docker socket. Give `/tmp` enough ephemeral capacity for extracted artifacts and keep `/var/lib/terraform-registry/trivy-cache` on the persistent volume. Use `examples/kubernetes/k3s/deployment-scanning.yaml` for a hardened Kubernetes starting point.
-
-Existing artifacts are backfilled asynchronously and remain unknown until scanned. Keep `SCAN_MODE=visibility` through migration. Switch to `quarantine` or `enforce` only after the queue drains and required waivers exist; blocking modes fail closed for unknown, stale, errored, and denied artifacts.
+Wait for the queue to drain, review findings and waivers, then restart without the override to return to `quarantine`. The scanner image contains Trivy and Checkov, runs them without executing provider binaries, and requires no Docker socket. Give `/tmp` enough ephemeral capacity for extracted artifacts and keep `/var/lib/terraform-registry/trivy-cache` on the persistent volume. Use `examples/kubernetes/k3s/deployment-scanning.yaml` for a hardened Kubernetes starting point.
 
 ## Kubernetes
 

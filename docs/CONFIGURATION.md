@@ -96,12 +96,14 @@ Storage is filesystem-only. Mount a persistent volume at `STORAGE_PATH`, ensure 
 
 ## Artifact scanning
 
-Use the scanner-enabled image and Compose overlay:
+Use the scanner-enabled default Compose deployment:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.scanning.yml up -d
+docker compose up -d
 ```
 
-`visibility` records and displays results without changing Terraform protocol visibility. `quarantine` and `enforce` fail closed: unknown, queued, running, errored, stale, or policy-denied artifacts are omitted from protocol/mirror discovery and direct downloads until allowed or covered by an active waiver. Start upgrades in `visibility`, allow startup backfill to complete, then deliberately enable a blocking mode.
+The server defaults remain scanner-off/visibility-safe when run directly. The provided `docker-compose.yml` selects the scanner image, sets `SCANNING_ENABLED=true`, and defaults `SCAN_MODE` to `quarantine` for a secure new deployment.
+
+`visibility` records and displays results without changing Terraform protocol visibility. `quarantine` and `enforce` fail closed: unknown, queued, running, errored, stale, or policy-denied artifacts are omitted from protocol/mirror discovery and direct downloads until allowed or covered by an active waiver. Start migrations of existing volumes in `visibility`, allow startup backfill to complete, then enable a blocking mode.
 
 The scanner image runs Trivy and Checkov as UID/GID 65534 in disposable `/tmp` workspaces. It never executes provider binaries and does not require a Docker socket. Give `/tmp` enough tmpfs capacity for the maximum expanded artifact and make `TRIVY_CACHE_DIR` persistent. For air-gapped operation, preload the Trivy database cache, set `SCAN_OFFLINE=true`, and prevent scanner egress at the platform network-policy layer.

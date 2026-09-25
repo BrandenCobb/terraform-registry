@@ -10,24 +10,30 @@ COPY registry-server/*.go ./registry-server/
 COPY registry-server/ui/ ./registry-server/ui/
 RUN cd registry-server && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-w -s -X main.version=${VERSION}" -o /app/terraform-registry .
-COPY cmd/tfreg/go.mod ./cmd/tfreg/
+COPY cmd/tfreg/go.* ./cmd/tfreg/
+RUN cd cmd/tfreg && go mod download
 COPY cmd/tfreg/*.go ./cmd/tfreg/
 RUN cd cmd/tfreg && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-w -s -X main.version=${VERSION}" -o /app/tfreg .
 
-# Trivy v0.73.0 pins `go 1.26.3` and builds against the pre-1.27 `encoding/json/v2`
-# experiment (it relies on `json.SkipFunc`, removed in Go 1.27). Keep this stage on
-# 1.26.x until a Trivy release compatible with Go 1.27 is available.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS trivy-builder
+# Build Trivy from its pinned release commit so patched transitive Go modules can
+# be applied before compilation. v0.74.0 still ships grpc 1.82.1, which has
+# fixed HIGH-severity CVEs in 1.83.2.
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS trivy-builder
 ARG TARGETOS=linux
 ARG TARGETARCH
-RUN apk add --no-cache git
-RUN git clone --branch v0.73.0 --depth 1 https://github.com/aquasecurity/trivy.git /src
+ARG TRIVY_COMMIT=e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994
+RUN apk add --no-cache git && \
+    git init /src && \
+    git -C /src remote add origin https://github.com/aquasecurity/trivy.git && \
+    git -C /src fetch --depth 1 origin "${TRIVY_COMMIT}" && \
+    git -C /src checkout --detach FETCH_HEAD
 WORKDIR /src
-RUN go get github.com/go-git/go-git/v5@v5.19.2 oras.land/oras-go/v2@v2.6.2 golang.org/x/text@v0.41.0 golang.org/x/mod@v0.40.0 && \
-    go mod tidy && GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
-        -ldflags="-w -s -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.73.0" \
-        -o /trivy ./cmd/trivy
+RUN go get google.golang.org/grpc@v1.83.2 && \
+    go mod tidy && \
+    GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+      -ldflags="-w -s -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.74.0" \
+      -o /trivy ./cmd/trivy
 FROM bridgecrew/checkov:3.3.19@sha256:d3e96adafdb315ca82e792ca8708c01adae85292800fb064c8b309b3d0cb7b80
 
 ARG VERSION=dev
@@ -35,7 +41,7 @@ LABEL org.opencontainers.image.source="https://github.com/BrandenCobb/terraform-
       org.opencontainers.image.description="Terraform registry with isolated-workspace Trivy and Checkov artifact scanning" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
-      io.terraform-registry.scanners="trivy=0.73.0,checkov=3.3.11"
+      io.terraform-registry.scanners="trivy=0.74.0,checkov=3.3.19"
 
 USER root
 COPY --from=builder --chown=65534:65534 /app/terraform-registry /app/terraform-registry

@@ -13,7 +13,8 @@ A production-focused, self-hosted Terraform provider and module registry. It is 
 - RBAC API keys (`read`, `write`, `admin`) for management mutations
 - Atomic writes, bounded streaming uploads/downloads, input validation, and traversal protection
 - Embedded dashboard at `/ui`
-- Optional enterprise artifact scanning: Trivy for provider ZIPs, Checkov for modules, durable history, policy quarantine, waivers, metrics, webhooks, and a security dashboard
+- Continuous artifact scanning by default: Trivy for provider ZIPs, Checkov for modules, durable history, quarantine policy, waivers, scheduled rescans, metrics, webhooks, and a security dashboard
+- Optional OCI 1.1 copies of provider/module packages for ECR and other OCI registries
 - Prometheus metrics, JSON logs, audit logs, rate limiting, and signed webhooks
 - Linux, macOS, and Windows release binaries; multi-architecture container images
 
@@ -24,49 +25,59 @@ Planned reliability, scale, and identity work is tracked in the [project roadmap
 ```bash
 export REGISTRY_API_KEY="$(openssl rand -hex 32)"
 export BASE_URL="http://localhost:5000"
-docker compose up -d
+docker compose up -d --build
 curl -fsS http://localhost:5000/health
+curl -fsS http://localhost:5000/api/v1/security/health
 ```
 
 The named Docker volume is persistent and writable by the non-root container. Save `REGISTRY_API_KEY`; it is the initial admin credential. If it is omitted, the server generates a key once and prints it to container logs.
 
 Open <http://localhost:5000/ui>.
 
-### Enable artifact scanning
+### Security policy
+
+The default Compose deployment continuously scans new and existing artifacts and uses `SCAN_MODE=quarantine`. Unknown, running, stale, errored, or HIGH/CRITICAL-denied artifacts are hidden from Terraform until they pass or receive an active waiver. Scheduled rescans run hourly and results become stale after seven days.
+
+For a migration containing existing artifacts, temporarily set `SCAN_MODE=visibility`, wait for the queue to drain, review findings, then return to quarantine:
 
 ```bash
-SCAN_MODE=visibility \
-  docker compose -f docker-compose.yml -f docker-compose.scanning.yml up -d
+SCAN_MODE=visibility docker compose up -d
 curl -fsS http://localhost:5000/api/v1/security/health
+# after review
+docker compose up -d
 ```
 
-Begin with `visibility`. Existing artifacts are discovered and queued during startup. After the backlog is clean and waivers are documented, switch to `quarantine` or `enforce`; blocking modes hide unknown, stale, errored, or denied artifacts consistently from Terraform protocol discovery and downloads. See [configuration](docs/CONFIGURATION.md#artifact-scanning).
+Scanning checks known provider-package vulnerabilities and module IaC policy. It does not prove source identity, provenance, or absence of malicious behavior; sign and attest releases in the publisher pipeline.
 
-### Pull the published image directly
+### Run the current source without Compose
 
 ```bash
+docker build -f Dockerfile.scanner --build-arg VERSION=dev -t terraform-registry-scanner:local .
 docker volume create terraform-registry-data
 docker run -d --name terraform-registry \
   -p 5000:8080 \
   -v terraform-registry-data:/var/lib/terraform-registry \
   -e BASE_URL=http://localhost:5000 \
   -e REGISTRY_API_KEY="$REGISTRY_API_KEY" \
-  ghcr.io/brandencobb/terraform-registry:v2.3.1
+  -e SCANNING_ENABLED=true \
+  -e SCAN_MODE=quarantine \
+  --tmpfs /tmp:size=1g,mode=1777 \
+  terraform-registry-scanner:local
 ```
 
 Production deployments must set `BASE_URL` to the externally reachable HTTPS URL and terminate TLS at a reverse proxy or ingress. Run one server replica per filesystem volume.
 
 ## Install `tfreg`
 
-Download a directly runnable binary from the [latest release](https://github.com/BrandenCobb/terraform-registry/releases/latest):
+Build the current CLI from this checkout:
 
 ```bash
-curl -fLO https://github.com/BrandenCobb/terraform-registry/releases/download/v2.3.1/tfreg-linux-amd64
-chmod +x tfreg-linux-amd64
-sudo install tfreg-linux-amd64 /usr/local/bin/tfreg
-
+make build
+sudo install dist/tfreg /usr/local/bin/tfreg
 tfreg version
 ```
+
+Published releases also provide directly runnable binaries. After a release containing this feature is available, download its matching platform binary from the [releases page](https://github.com/BrandenCobb/terraform-registry/releases), mark it executable, and install it as `/usr/local/bin/tfreg`.
 
 Set connection defaults:
 
@@ -77,35 +88,63 @@ export TFREG_API_KEY="$REGISTRY_API_KEY"
 
 ## Publish artifacts
 
-### Provider
+`publish` is the normal source-to-registry workflow. It uses `TFREG_REGISTRY` and `TFREG_API_KEY`; `bundle` and `push` remain available for prebuilt packages.
 
-Bundle a provider executable, then upload the ZIP:
+### Provider: test, build, bundle, and push
 
-```bash
-tfreg bundle provider \
-  --namespace acme --name example --version 1.2.3 \
-  --os linux --arch amd64 \
-  --binary ./terraform-provider-example_v1.2.3
-
-tfreg push provider \
-  --namespace acme --name example --version 1.2.3 \
-  --os linux --arch amd64 \
-  --file ./terraform-provider-example_1.2.3_linux_amd64.zip
-```
-
-Repeat the upload for each OS/architecture. The server assigns a canonical filename and computes the checksum.
-
-### Module
+From a cloned Go provider repository:
 
 ```bash
-tfreg bundle module \
-  --namespace acme --name vpc --provider aws --version 1.2.3 \
-  --source ./modules/vpc
-
-tfreg push module \
-  --namespace acme --name vpc --provider aws --version 1.2.3 \
-  --file ./acme-vpc-aws-1.2.3.tar.gz
+git clone https://github.com/acme/terraform-provider-example.git
+cd terraform-provider-example
+# modify and test the provider, then:
+tfreg publish provider \
+  --namespace acme --name example --version 1.2.3 \
+  --source . --os linux --arch amd64
 ```
+
+The command runs `go test ./...`, cross-compiles with `CGO_ENABLED=0`, creates the Terraform provider ZIP, uploads it, and removes temporary build files. Run it once per target platform. Use `--skip-tests` only when tests already ran in the same trusted pipeline.
+
+### Module: bundle and push the repository
+
+```bash
+cd /path/to/terraform-module-vpc
+tfreg publish module \
+  --namespace acme --name vpc --provider aws --version 1.2.3 \
+  --source .
+```
+
+The archive excludes `.git`, `.terraform`, Terraform state, and crash logs while retaining module source and lock files.
+
+### Also publish an OCI artifact to ECR
+
+Create the ECR repository once, then pipe the short-lived ECR token to `tfreg`:
+
+```bash
+AWS_ACCOUNT_ID=123456789012
+AWS_REGION=us-east-1
+ECR="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+aws ecr create-repository --repository-name terraform/providers/acme/example 2>/dev/null || true
+
+aws ecr get-login-password --region "$AWS_REGION" | \
+  tfreg publish provider \
+    --namespace acme --name example --version 1.2.3 \
+    --source . --os linux --arch amd64 \
+    --oci-ref "$ECR/terraform/providers/acme/example:1.2.3-linux-amd64" \
+    --oci-username AWS --oci-password-stdin
+```
+
+For a module, use the same flags with a module reference such as:
+
+```bash
+aws ecr get-login-password --region "$AWS_REGION" | \
+  tfreg publish module \
+    --namespace acme --name vpc --provider aws --version 1.2.3 --source . \
+    --oci-ref "$ECR/terraform/modules/acme/vpc/aws:1.2.3" \
+    --oci-username AWS --oci-password-stdin
+```
+
+If `--oci-username` and `--oci-password-stdin` are omitted, `tfreg` uses Docker's configured credential store. The OCI 1.1 manifest wraps the exact Terraform ZIP or tarball with Terraform media types and identity annotations. OCI is a portable copy/replication target; Terraform clients still consume artifacts through this service's Terraform protocol endpoints. Registry and OCI pushes are sequential rather than transactional, so retry the command after repairing either destination.
 
 ### Browse, pull, and delete
 

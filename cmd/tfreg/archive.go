@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func createZip(sourceFile, destPath string) (err error) {
@@ -100,6 +101,12 @@ func createTarGz(sourceDir, destPath string) (err error) {
 		if relPath == "." {
 			return nil
 		}
+		if excludeModuleBundlePath(relPath) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		header, headerErr := tar.FileInfoHeader(info, "")
 		if headerErr != nil {
 			return headerErr
@@ -129,4 +136,17 @@ func createTarGz(sourceDir, destPath string) (err error) {
 		err = closeErr
 	}
 	return err
+}
+
+func excludeModuleBundlePath(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".git" || part == ".terraform" {
+			return true
+		}
+	}
+	name := filepath.Base(path)
+	return name == "crash.log" ||
+		(strings.HasPrefix(name, "crash.") && strings.HasSuffix(name, ".log")) ||
+		strings.HasSuffix(name, ".tfstate") ||
+		strings.Contains(name, ".tfstate.")
 }

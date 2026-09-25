@@ -8,7 +8,7 @@ services:
         VERSION: v2.3.1
     environment:
       SCANNING_ENABLED: "true"
-      SCAN_MODE: "${SCAN_MODE:-visibility}"
+      SCAN_MODE: "${SCAN_MODE:-quarantine}"
       SCAN_WORKERS: "${SCAN_WORKERS:-1}"
       SCAN_TIMEOUT: "${SCAN_TIMEOUT:-15m}"
       SCAN_STALE_AFTER: "${SCAN_STALE_AFTER:-168h}"

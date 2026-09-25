@@ -36,6 +36,8 @@ func main() {
 		handleList(args)
 	case "bundle":
 		handleBundle(args)
+	case "publish":
+		handlePublish(args)
 	case "delete", "rm":
 		handleDelete(args)
 	case "version":
@@ -59,6 +61,7 @@ Commands:
   pull      Download a provider or module from the registry
   list      List providers or modules in the registry
   bundle    Create a distributable bundle from local files
+  publish   Build/bundle and push source in one command (optional OCI/ECR copy)
   delete    Remove a provider or module version from the registry
   version   Show version
 
@@ -724,9 +727,10 @@ func newFlagSet(name string) *flagSet {
 
 // Simple flag set wrapper
 type flagSet struct {
-	name  string
-	flags []flag
-	rest  []string
+	name      string
+	flags     []flag
+	boolFlags []boolFlag
+	rest      []string
 }
 
 type flag struct {
@@ -736,11 +740,34 @@ type flag struct {
 	desc  string
 }
 
+type boolFlag struct {
+	name  string
+	value *bool
+	def   bool
+	desc  string
+}
+
 func (fs *flagSet) String(name, def, desc string) *string {
 	v := new(string)
 	*v = def
 	fs.flags = append(fs.flags, flag{name: name, value: v, def: def, desc: desc})
 	return v
+}
+
+func (fs *flagSet) StringVar(value *string, name, def, desc string) {
+	*value = def
+	fs.flags = append(fs.flags, flag{name: name, value: value, def: def, desc: desc})
+}
+
+func (fs *flagSet) Bool(name string, def bool, desc string) *bool {
+	value := new(bool)
+	fs.BoolVar(value, name, def, desc)
+	return value
+}
+
+func (fs *flagSet) BoolVar(value *bool, name string, def bool, desc string) {
+	*value = def
+	fs.boolFlags = append(fs.boolFlags, boolFlag{name: name, value: value, def: def, desc: desc})
 }
 
 func (fs *flagSet) Parse(args []string) {
@@ -753,6 +780,13 @@ func (fs *flagSet) Parse(args []string) {
 				os.Exit(0)
 			}
 			found := false
+			for j := range fs.boolFlags {
+				if fs.boolFlags[j].name == key {
+					found = true
+					*fs.boolFlags[j].value = true
+					break
+				}
+			}
 			for j := range fs.flags {
 				if fs.flags[j].name == key {
 					found = true
@@ -787,6 +821,9 @@ func (fs *flagSet) Usage() {
 	fmt.Fprintf(os.Stderr, "\nUsage: %s [options]\n\nOptions:\n", fs.name)
 	for _, f := range fs.flags {
 		fmt.Fprintf(os.Stderr, "  --%-12s %s (default: %s)\n", f.name, f.desc, f.def)
+	}
+	for _, f := range fs.boolFlags {
+		fmt.Fprintf(os.Stderr, "  --%-12s %s (default: %t)\n", f.name, f.desc, f.def)
 	}
 	fmt.Fprintln(os.Stderr)
 }
