@@ -10,7 +10,8 @@ COPY registry-server/ui/ ./registry-server/ui/
 RUN cd registry-server && CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-w -s -X main.version=${VERSION}" -o /app/terraform-registry .
 
-COPY cmd/tfreg/go.mod ./cmd/tfreg/
+COPY cmd/tfreg/go.* ./cmd/tfreg/
+RUN cd cmd/tfreg && go mod download
 COPY cmd/tfreg/*.go ./cmd/tfreg/
 RUN cd cmd/tfreg && CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-w -s -X main.version=${VERSION}" -o /app/tfreg .

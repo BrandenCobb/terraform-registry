@@ -1,6 +1,6 @@
 module github.com/BrandenCobb/terraform-registry
 
-go 1.26
+go 1.26.6
 
 require github.com/gorilla/mux v1.8.1
 

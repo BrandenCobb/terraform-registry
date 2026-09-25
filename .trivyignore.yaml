@@ -1,0 +1,11 @@
+vulnerabilities:
+  - id: CVE-2026-54448
+    paths:
+      - "usr/local/bin/trivy"
+    expired_at: 2026-12-31
+    statement: "False positive: the binary is Trivy 0.74.0, but rebuilding the pinned release with a patched grpc dependency makes Go build metadata identify the main module as a pseudo-version. This CVE was fixed in Trivy 0.71.0."
+  - id: CVE-2026-55092
+    paths:
+      - "usr/local/bin/trivy"
+    expired_at: 2026-12-31
+    statement: "False positive: the binary is Trivy 0.74.0, but rebuilding the pinned release with a patched grpc dependency makes Go build metadata identify the main module as a pseudo-version. This CVE was fixed in Trivy 0.71.1."
