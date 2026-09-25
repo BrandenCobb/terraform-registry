@@ -146,6 +146,26 @@ aws ecr get-login-password --region "$AWS_REGION" | \
 
 If `--oci-username` and `--oci-password-stdin` are omitted, `tfreg` uses Docker's configured credential store. The OCI 1.1 manifest wraps the exact Terraform ZIP or tarball with Terraform media types and identity annotations. OCI is a portable copy/replication target; Terraform clients still consume artifacts through this service's Terraform protocol endpoints. Registry and OCI pushes are sequential rather than transactional, so retry the command after repairing either destination.
 
+### Import an OCI/ECR artifact into the Terraform registry
+
+`tfreg import` restores either artifact kind from its OCI metadata; namespace, name, version, provider, and platform flags are not repeated:
+
+```bash
+aws ecr get-login-password --region "$AWS_REGION" | \
+  tfreg import \
+    --oci-ref "$ECR/terraform/providers/acme/example:1.2.3-linux-amd64" \
+    --oci-username AWS --oci-password-stdin
+```
+
+A digest-pinned reference is also accepted and is preferred for automation:
+
+```bash
+tfreg import \
+  --oci-ref "$ECR/terraform/modules/acme/vpc/aws@sha256:<manifest-digest>"
+```
+
+Before upload, the CLI requires the Terraform OCI artifact type, exactly one matching provider ZIP or module tarball layer, complete safe identity annotations, an acceptable size, and matching manifest/package digests. It then sends the exact package through the normal registry upload endpoint. The server repeats package validation, writes atomically, computes its SHA-256, and queues the normal Trivy or Checkov scan. With the default `quarantine` policy, the imported artifact is not available to Terraform clients until scanning allows it.
+
 ### Browse, pull, and delete
 
 ```bash

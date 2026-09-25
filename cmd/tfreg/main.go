@@ -38,6 +38,8 @@ func main() {
 		handleBundle(args)
 	case "publish":
 		handlePublish(args)
+	case "import":
+		handleImport(args)
 	case "delete", "rm":
 		handleDelete(args)
 	case "version":
@@ -62,6 +64,7 @@ Commands:
   list      List providers or modules in the registry
   bundle    Create a distributable bundle from local files
   publish   Build/bundle and push source in one command (optional OCI/ECR copy)
+  import    Copy a validated Terraform OCI/ECR artifact into the registry
   delete    Remove a provider or module version from the registry
   version   Show version
 

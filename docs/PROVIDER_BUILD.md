@@ -28,6 +28,15 @@ aws ecr get-login-password --region us-east-1 | \
     --oci-username AWS --oci-password-stdin
 ```
 
-The ECR repository must already exist. Without explicit credentials, `tfreg` reads Docker's configured credential store.
+The ECR repository must already exist. Without explicit credentials, `tfreg` reads Docker's configured credential store. Restore the package later with the same short-lived ECR credentials:
+
+```bash
+aws ecr get-login-password --region us-east-1 | \
+  tfreg import \
+    --oci-ref 123456789012.dkr.ecr.us-east-1.amazonaws.com/terraform/providers/acme/example:1.2.3-linux-amd64 \
+    --oci-username AWS --oci-password-stdin
+```
+
+The import validates OCI media types, identity annotations, size, and digests before submitting the exact ZIP to the normal upload endpoint. The registry then performs its standard ZIP validation, atomic storage, SHA-256 calculation, Trivy scan, and policy decision.
 
 The registry validates ZIP magic bytes, streams uploads with the configured limit, stores them atomically, computes SHA-256, scans them with Trivy, and publishes platform metadata only when the configured security policy allows it. Vulnerability scanning is not source provenance: signing and build attestations remain the publisher's responsibility.

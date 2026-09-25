@@ -98,6 +98,9 @@ jobs:
             -e BASE_URL=http://localhost:5502 -e REGISTRY_API_KEY=scanner-secret \
             -e SCANNING_ENABLED=true -e SCAN_MODE=visibility terraform-registry-scanner:test
           timeout 45 bash -c 'until curl -fsS http://localhost:5502/api/v1/security/health | jq -e ".data.enabled and .data.ready"; do sleep 1; done'
+          # shellcheck disable=SC2016
+          timeout 45 bash -c 'until [ "$(docker inspect --format={{.State.Health.Status}} terraform-registry-scanner)" = healthy ]; do sleep 1; done'
+          docker compose config --format json | jq -e '.services["terraform-registry"].healthcheck.test[1] == "python3"'
           docker exec terraform-registry-scanner trivy --version
           docker exec terraform-registry-scanner checkov --version
           mkdir scanner-fixture
@@ -118,7 +121,10 @@ jobs:
             -e BASE_URL=http://localhost:5000 \
             -e REGISTRY_API_KEY=integration-secret \
             -e RATE_LIMIT=10000 terraform-registry:test
+          docker run -d --name terraform-registry-oci -p 5500:5000 \
+            registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
           timeout 30 bash -c 'until curl -fsS http://localhost:5000/health; do sleep 1; done'
+          timeout 30 bash -c 'until curl -fsS http://localhost:5500/v2/; do sleep 1; done'
       - name: End-to-end API and CLI
         run: |
           printf '#!/bin/sh\nexit 0\n' > terraform-provider-example_v1.0.0
@@ -140,6 +146,18 @@ jobs:
           TFREG_REGISTRY=http://localhost:5000 \
             ./tfreg pull module --namespace test --name vpc --provider aws --version 1.0.0 --output /tmp
 
+          TFREG_REGISTRY=http://localhost:5000 TFREG_API_KEY=integration-secret \
+            ./tfreg publish module --namespace test --name oci --provider aws --version 2.0.0 \
+              --source module --oci-ref localhost:5500/terraform/modules/test/oci/aws:2.0.0 --oci-plain-http
+          curl -fsS -X DELETE -H 'X-API-Key: integration-secret' \
+            http://localhost:5000/api/v1/modules/test/oci/aws/2.0.0
+          TFREG_REGISTRY=http://localhost:5000 TFREG_API_KEY=integration-secret \
+            ./tfreg import --oci-ref localhost:5500/terraform/modules/test/oci/aws:2.0.0 --oci-plain-http
+          curl -fsS http://localhost:5000/v1/modules/test/oci/aws/versions | jq -e '.modules[0].versions[0].version == "2.0.0"'
+          TFREG_REGISTRY=http://localhost:5502 TFREG_API_KEY=scanner-secret \
+            ./tfreg import --oci-ref localhost:5500/terraform/modules/test/oci/aws:2.0.0 --oci-plain-http
+          timeout 90 bash -c 'until curl -fsS http://localhost:5502/api/v1/security/scans | jq -e '\''any((.data.items // .data)[]; .kind == "module" and .namespace == "test" and .name == "oci" and .version == "2.0.0" and .status == "clean" and .policy_result == "allow")'\''; do sleep 2; done'
+
           curl -fsS http://localhost:5000/.well-known/terraform.json | jq -e '."providers.v1" and ."modules.v1"'
           curl -fsS http://localhost:5000/v1/modules/test/vpc/aws/versions | jq -e '.modules[0].versions[0].version == "1.0.0"'
           test "$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE http://localhost:5000/api/v1/providers/test/example/1.0.0)" = 401
@@ -151,5 +169,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          docker rm -f terraform-registry terraform-registry-scanner || true
+          docker rm -f terraform-registry terraform-registry-scanner terraform-registry-oci || true
           docker volume rm terraform-registry-test-data terraform-registry-scanner-test-data || true
