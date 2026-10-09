@@ -1,6 +1,6 @@
 module github.com/BrandenCobb/terraform-registry/cmd/tfreg
 
-go 1.26.6
+go 1.27.1
 
 require (
 	github.com/opencontainers/go-digest v1.0.0
