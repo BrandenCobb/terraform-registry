@@ -38,8 +38,8 @@ jobs:
           (cd cmd/tfreg && go test -race ./...)
           (cd registry-server && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
           (cd cmd/tfreg && go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
-          (cd registry-server && go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 ./...)
-          (cd cmd/tfreg && go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 ./...)
+          (cd registry-server && go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...)
+          (cd cmd/tfreg && go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...)
       - name: Build directly runnable binaries and archives
         shell: bash
         run: |
