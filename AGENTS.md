@@ -1,6 +1,20 @@
-# CLAUDE.md
+# AGENTS.md
 
 Production-ready self-hosted Terraform Registry for air-gapped and private environments.
+
+## Scope guardrails — read before making changes
+
+This registry is intentionally small, lightweight, and portable. Before adding a feature, check this list:
+
+**In scope:** Terraform protocol serving, filesystem storage, `tfreg` CLI (push/pull/bundle/import/list/delete), OCI import/export for ECR promotion pipelines, RBAC API keys, OIDC (Keycloak / e-ICAM), metrics, audit logs, air-gapped operability.
+
+**Out of scope — handled by Advana/WDP:** Runtime artifact scanning (Trivy/Checkov), quarantine/waiver policies, security dashboards, promotion channel enforcement.
+
+**Out of scope — removed:** Webhooks (no use case in target deployment).
+
+**Never add:** Mandatory external service calls, telemetry, auto-update checks, Docker socket exposure, database dependencies.
+
+If a research task or issue proposes something in the out-of-scope list, close it with a reference to Advana/WDP or note it as not applicable. Do not re-introduce removed subsystems.
 
 ## Architecture
 
@@ -14,22 +28,16 @@ registry-server/          # Server (Go, gorilla/mux)
   auth.go                 # RBAC with per-user API keys (JSON file)
   middleware.go            # Rate limiter, audit log, upload validation
   metrics.go              # Prometheus + JSON metrics
-  webhooks.go             # Webhook notifications on publish/delete/deprecate
-  scanning.go             # Scan records, policy, waivers, safe extraction/parsing
-  scanner_manager.go      # Durable queue, workers, recovery, backfill, scheduling
-  scanning_api.go         # Security overview/detail/report/rescan/waiver APIs
   crypto.go               # SHA256, GPG verification helpers
   ui.go                   # Embedded web UI (go:embed)
   ui/                     # Dashboard HTML/CSS/JS
 
 cmd/tfreg/                # CLI tool (Go, zero deps)
-  main.go                 # push/pull/bundle/list/delete
+  main.go                 # push/pull/bundle/import/list/delete
   archive.go              # zip/tar.gz helpers
 
 Dockerfile                # Multi-stage: server + CLI
-Dockerfile.scanner        # Scanner variant with pinned Trivy + Checkov
 docker-compose.yml        # Quick start
-docker-compose.scanning.yml # Scanner-enabled overlay
 ```
 
 ## Build & Run
@@ -65,17 +73,6 @@ docker-compose up -d
 | `RATE_WINDOW` | `1m` | Rate limit window duration |
 | `MAX_UPLOAD_MB` | `500` | Maximum upload size in MB |
 | `LOG_LEVEL` | `info` | `info` or `debug` |
-| `WEBHOOK_CONFIG` | (empty) | Path to webhook config JSON |
-| `SCANNING_ENABLED` | `false` | Enable durable asynchronous artifact scanning |
-| `SCAN_MODE` | `visibility` | `visibility`, `quarantine`, or `enforce` |
-| `SCAN_WORKERS` | `1` | Concurrent scanner workers (1-16) |
-| `SCAN_TIMEOUT` | `15m` | Per-artifact scanner timeout |
-| `SCAN_STALE_AFTER` | `168h` | Age after which completed results become stale |
-| `SCAN_INTERVAL` | `1h` | Scheduled stale/error rescan interval |
-| `SCAN_DENY_SEVERITIES` | `critical,high` | Severities producing policy denial |
-| `SCAN_OFFLINE` | `false` | Disable Trivy DB updates; preload/persist cache for air-gapped use |
-| `TRIVY_PATH` / `CHECKOV_PATH` | `trivy` / `checkov` | Scanner executable paths in the scanner image |
-| `TRIVY_CACHE_DIR` | (empty) | Persistent Trivy vulnerability database cache |
 
 ## API Keys (RBAC)
 
@@ -99,8 +96,6 @@ Terraform protocol endpoints are always public (no auth needed for `terraform in
 │       ├── module.tar.gz
 │       └── metadata.json
 ├── keys.json                         # API keys
-├── scans/                            # Digest-bound current/history/raw reports + waivers
-├── trivy-cache/                      # Rebuildable vulnerability database cache
 └── tmp/                              # Temp uploads (GC'd hourly)
 ```
 
@@ -125,15 +120,6 @@ Terraform protocol endpoints are always public (no auth needed for `terraform in
 - `DELETE /api/v1/modules/{ns}/{name}/{provider}/{ver}` — Delete (admin)
 - `POST /api/v1/modules/{ns}/{name}/{provider}/{ver}/deprecate` — Deprecate
 - `POST /api/v1/gc` — Trigger garbage collection (admin)
-- `GET /api/v1/security/health` — Scanner enablement, mode, readiness, queue depth
-- `GET /api/v1/security/summary` — Complete-inventory status/policy/severity aggregates for the command center
-- `GET /api/v1/security/scans` — Public redacted security overview
-- `GET /api/v1/security/scans/{digest}` — Authenticated findings/detail
-- `GET /api/v1/security/scans/{digest}/history` — Authenticated history
-- `GET /api/v1/security/scans/{digest}/reports/{scanID}` — Authenticated raw report
-- `POST /api/v1/security/scans/{digest}/rescan` — Manual rescan (write)
-- `POST /api/v1/security/scans/{digest}/waivers` — Expiring waiver (admin)
-- `DELETE /api/v1/security/waivers/{waiverID}` — Revoke waiver (admin)
 
 ### Operations
 - `GET /health` — Health check (JSON)
@@ -146,9 +132,7 @@ Mount PVC at `STORAGE_PATH`. All writes are atomic (temp+rename).
 File-level mutex prevents concurrent writes to same artifact.
 Hourly GC cleans orphaned temp files. Graceful shutdown on SIGTERM/SIGINT.
 
-Run exactly one registry process per filesystem volume. Scanning is optional and filesystem-backed: provider ZIPs use Trivy, module archives use Checkov, and artifacts are never executed. Begin upgrades in `SCAN_MODE=visibility`; `quarantine`/`enforce` fail closed for unknown, queued, scanning, errored, stale, or policy-denied digests. Persist the complete storage volume (including scan history and waivers) and the Trivy cache; scanner workspaces remain disposable under `/tmp`.
-
-**Security/command-center notes (2026-08-12, v2.3.0):** `/ui` is now the enterprise command center, not a basic CRUD dashboard. It depends on `/api/v1/security/summary` for complete-inventory posture scoring and policy-blocked counts because `/security/scans?limit=100` is only a paginated overview. Keep security UI rendering DOM-only (no report HTML injection), and keep color paired with text labels for accessibility. Scanner Docker builds intentionally cross-compile the registry and Trivy binaries on the native BuildKit host platform to avoid slow QEMU compilation during multi-architecture releases.
+Run exactly one registry process per filesystem volume. Persist the complete storage volume. TLS is supplied by a reverse proxy or ingress.
 
 ```yaml
 # Kubernetes PVC
@@ -170,5 +154,14 @@ tfreg push module --namespace example --name vpc --provider aws --version 1.0.0 
 tfreg list providers
 tfreg pull provider --namespace hashicorp --name aws --version 6.31.0
 tfreg bundle provider --namespace hashicorp --name aws --version 6.31.0 --binary ./terraform-provider-aws
+tfreg import --oci-ref "$ECR/terraform/providers/acme/example:1.2.3-linux-amd64" --oci-username AWS --oci-password-stdin
 tfreg delete provider --namespace hashicorp --name aws --version 6.31.0
 ```
+
+## Air-Gapped Deployment
+
+The registry has no mandatory external service calls. For air-gapped environments:
+1. Build the container image in an internet-connected environment
+2. Transfer the image and any provider/module ZIPs via approved media
+3. `docker load` the image, start the registry, and use `tfreg push` or `tfreg import` to populate artifacts
+4. Configure Terraform clients to use the internal registry as a network mirror (see README)
