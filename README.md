@@ -13,9 +13,8 @@ A production-focused, self-hosted Terraform provider and module registry. It is 
 - RBAC API keys (`read`, `write`, `admin`) for management mutations
 - Atomic writes, bounded streaming uploads/downloads, input validation, and traversal protection
 - Embedded dashboard at `/ui`
-- Continuous artifact scanning by default: Trivy for provider ZIPs, Checkov for modules, durable history, quarantine policy, waivers, scheduled rescans, metrics, webhooks, and a security dashboard
 - Optional OCI 1.1 copies of provider/module packages for ECR and other OCI registries
-- Prometheus metrics, JSON logs, audit logs, rate limiting, and signed webhooks
+- Prometheus metrics, JSON logs, audit logs, and rate limiting
 - Linux, macOS, and Windows release binaries; multi-architecture container images
 
 Planned reliability, scale, and identity work is tracked in the [project roadmap](ROADMAP.md).
@@ -27,42 +26,22 @@ export REGISTRY_API_KEY="$(openssl rand -hex 32)"
 export BASE_URL="http://localhost:5000"
 docker compose up -d --build
 curl -fsS http://localhost:5000/health
-curl -fsS http://localhost:5000/api/v1/security/health
 ```
 
 The named Docker volume is persistent and writable by the non-root container. Save `REGISTRY_API_KEY`; it is the initial admin credential. If it is omitted, the server generates a key once and prints it to container logs.
 
 Open <http://localhost:5000/ui>.
 
-### Security policy
-
-The default Compose deployment continuously scans new and existing artifacts and uses `SCAN_MODE=quarantine`. Unknown, running, stale, errored, or HIGH/CRITICAL-denied artifacts are hidden from Terraform until they pass or receive an active waiver. Scheduled rescans run hourly and results become stale after seven days.
-
-For a migration containing existing artifacts, temporarily set `SCAN_MODE=visibility`, wait for the queue to drain, review findings, then return to quarantine:
-
-```bash
-SCAN_MODE=visibility docker compose up -d
-curl -fsS http://localhost:5000/api/v1/security/health
-# after review
-docker compose up -d
-```
-
-Scanning checks known provider-package vulnerabilities and module IaC policy. It does not prove source identity, provenance, or absence of malicious behavior; sign and attest releases in the publisher pipeline.
-
 ### Run the current source without Compose
 
 ```bash
-docker build -f Dockerfile.scanner --build-arg VERSION=dev -t terraform-registry-scanner:local .
 docker volume create terraform-registry-data
 docker run -d --name terraform-registry \
   -p 5000:8080 \
   -v terraform-registry-data:/var/lib/terraform-registry \
   -e BASE_URL=http://localhost:5000 \
   -e REGISTRY_API_KEY="$REGISTRY_API_KEY" \
-  -e SCANNING_ENABLED=true \
-  -e SCAN_MODE=quarantine \
-  --tmpfs /tmp:size=1g,mode=1777 \
-  terraform-registry-scanner:local
+  terraform-registry:latest
 ```
 
 Production deployments must set `BASE_URL` to the externally reachable HTTPS URL and terminate TLS at a reverse proxy or ingress. Run one server replica per filesystem volume.
@@ -164,7 +143,7 @@ tfreg import \
   --oci-ref "$ECR/terraform/modules/acme/vpc/aws@sha256:<manifest-digest>"
 ```
 
-Before upload, the CLI requires the Terraform OCI artifact type, exactly one matching provider ZIP or module tarball layer, complete safe identity annotations, an acceptable size, and matching manifest/package digests. It then sends the exact package through the normal registry upload endpoint. The server repeats package validation, writes atomically, computes its SHA-256, and queues the normal Trivy or Checkov scan. With the default `quarantine` policy, the imported artifact is not available to Terraform clients until scanning allows it.
+Before upload, the CLI requires the Terraform OCI artifact type, exactly one matching provider ZIP or module tarball layer, complete safe identity annotations, an acceptable size, and matching manifest/package digests. It then sends the exact package through the normal registry upload endpoint. The server repeats package validation, writes atomically, and computes its SHA-256.
 
 ### Browse, pull, and delete
 
@@ -206,7 +185,7 @@ Private Terraform services require HTTPS outside local development.
 
 ## Authentication
 
-Protocol, mirror, artifact download, health, metrics, UI, and management overview `GET` routes are public. Detailed scan findings/history/raw reports require a read-capable key. Management mutations require either:
+Protocol, mirror, artifact download, health, metrics, UI, and management overview `GET` routes are public. Management mutations require either:
 
 ```text
 X-API-Key: <key>
@@ -236,7 +215,6 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the file format and rot
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` for rate limiting |
 | `AUDIT_LOG` | empty | Optional append-only JSONL audit file |
 | `LOG_LEVEL` | `info` | `info` or `debug` |
-| `WEBHOOK_CONFIG` | empty | Webhook JSON configuration file |
 
 Only enable `TRUST_PROXY_HEADERS` when the service is reachable exclusively through a trusted proxy that overwrites those headers.
 

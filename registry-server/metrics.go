@@ -63,6 +63,14 @@ type MetricsSnapshot struct {
 	ScanFindings       FindingCounts `json:"scan_findings"`
 }
 
+// FindingCounts tracks security finding counts by severity.
+type FindingCounts struct {
+	Critical int64 `json:"critical"`
+	High     int64 `json:"high"`
+	Medium   int64 `json:"medium"`
+	Low      int64 `json:"low"`
+}
+
 // Snapshot returns current metrics.
 func (m *RegistryMetrics) Snapshot() MetricsSnapshot {
 	uptime := time.Since(m.startTime)
@@ -84,21 +92,6 @@ func (m *RegistryMetrics) Snapshot() MetricsSnapshot {
 		ScanQueueDepth:     m.ScanQueueDepth.Load(),
 		ScanRunning:        m.ScanRunning.Load(),
 		ScanFindings:       FindingCounts{Critical: m.ScanFindingsCritical.Load(), High: m.ScanFindingsHigh.Load(), Medium: m.ScanFindingsMedium.Load(), Low: m.ScanFindingsLow.Load()},
-	}
-}
-
-func (m *RegistryMetrics) AddScanFindings(findings []Finding) {
-	for _, finding := range findings {
-		switch finding.Severity {
-		case SeverityCritical:
-			m.ScanFindingsCritical.Add(1)
-		case SeverityHigh:
-			m.ScanFindingsHigh.Add(1)
-		case SeverityMedium:
-			m.ScanFindingsMedium.Add(1)
-		case SeverityLow:
-			m.ScanFindingsLow.Add(1)
-		}
 	}
 }
 

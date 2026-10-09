@@ -20,7 +20,6 @@
             <a href="#dashboard" data-tab="dashboard" class="active"><span>Overview</span></a>
             <a href="#providers" data-tab="providers"><span>Providers</span></a>
             <a href="#modules" data-tab="modules"><span>Modules</span></a>
-            <a href="#security" data-tab="security"><span>Security</span><i id="nav-alert-count" class="nav-count" hidden>0</i></a>
             <a href="#upload" data-tab="upload"><span>Publish</span></a>
         </div>
         <div class="system-status"><span id="system-pulse" class="status-dot"></span><span id="system-label">Connecting</span></div>
@@ -32,18 +31,12 @@
                 <div>
                     <div class="eyebrow"><span class="live-pip"></span> PRIVATE INFRASTRUCTURE · LIVE</div>
                     <h1>Artifact trust,<br><span>at a glance.</span></h1>
-                    <p>One hardened control plane for Terraform distribution, integrity, and security posture.</p>
-                </div>
-                <div class="posture-orbit" aria-label="Registry security posture">
-                    <div class="orbit-ring"><div class="orbit-core"><strong id="posture-score">—</strong><span>POSTURE</span></div></div>
-                    <div id="posture-caption" class="orbit-caption">Calculating posture</div>
+                    <p>A self-hosted control plane for Terraform provider and module distribution.</p>
                 </div>
             </header>
             <div class="stats-grid registry-stats" id="stats-grid">
                 <article class="stat-card accent-purple"><div class="stat-icon">P</div><div><div class="stat-value" id="stat-providers">—</div><div class="stat-label">Providers</div><div class="stat-note" id="stat-provider-versions">— versions</div></div></article>
-                <article class="stat-card accent-cyan"><div class="stat-icon">M</div><div><div class="stat-value" id="stat-modules">—</div><div class="stat-label">Modules</div><div class="stat-note" id="stat-module-versions">— versions</div></div></article>
-                <article class="stat-card accent-lime"><div class="stat-icon">✓</div><div><div class="stat-value" id="stat-clean">—</div><div class="stat-label">Verified clean</div><div class="stat-note">Digest-bound results</div></div></article>
-                <article class="stat-card accent-coral"><div class="stat-icon">!</div><div><div class="stat-value" id="stat-blocked">—</div><div class="stat-label">Policy blocked</div><div class="stat-note">Fail-closed enforcement</div></div></article>
+                <article class="stat-card accent-cyan"><div class="stat-icon">M</div><div><div class="stat-value" id="stat-modules">—</div><div class="stat-label">Modules</div><div class="stat-note" id="stat-module-versions">— versions</div></article>
             </div>
             <div class="dashboard-grid">
                 <article class="panel quickstart-panel">
@@ -56,11 +49,6 @@ provider_installation {
   }
 }</code></pre>
                     <div id="copy-feedback" class="copy-feedback" aria-live="polite"></div>
-                </article>
-                <article class="panel activity-panel">
-                    <div class="panel-heading"><div><span class="eyebrow">SECURITY PULSE</span><h2>Current inventory</h2></div><a href="#security" data-tab="security" class="text-link">EXPLORE →</a></div>
-                    <div id="risk-bars" class="risk-bars"><div class="loading">Analyzing inventory…</div></div>
-                    <div id="scanner-line" class="scanner-line">Scanner status unavailable</div>
                 </article>
             </div>
         </section>
@@ -75,28 +63,8 @@ provider_installation {
             <div id="modules-list" class="artifact-grid"><div class="loading">Loading modules…</div></div>
         </section>
 
-        <section id="tab-security" class="tab-content">
-            <div class="section-heading security-heading">
-                <div><span class="eyebrow">ENTERPRISE SECURITY</span><h1>Trust Center</h1><p class="artifact-meta">Continuous, digest-bound Trivy and Checkov intelligence.</p></div>
-                <div class="heading-actions"><label class="auto-refresh"><input id="security-auto-refresh" type="checkbox" checked> LIVE</label><button id="security-refresh" class="btn" type="button">↻ Refresh</button></div>
-            </div>
-            <div class="security-hero">
-                <div class="security-score"><span>RISK SCORE</span><strong id="security-risk-score">—</strong><small id="security-risk-label">Loading</small></div>
-                <div class="stats-grid" id="security-stats" aria-live="polite"></div>
-            </div>
-            <div class="toolbar">
-                <div class="search-wrap security-search"><span>⌕</span><input id="security-search" type="search" placeholder="Search identity, digest, platform" autocomplete="off"></div>
-                <div class="segmented" id="security-status-group" aria-label="Filter scan status">
-                    <button type="button" data-value="" class="active">All</button><button type="button" data-value="findings">Findings</button><button type="button" data-value="clean">Clean</button><button type="button" data-value="scanning">Active</button><button type="button" data-value="error">Errors</button>
-                </div>
-                <select id="security-kind" aria-label="Filter artifact kind"><option value="">All artifacts</option><option value="provider">Providers</option><option value="module">Modules</option></select>
-                <select id="security-severity" aria-label="Filter severity"><option value="">All severities</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option></select>
-            </div>
-            <div id="security-list" class="security-list"><div class="loading">Loading scan results…</div></div>
-        </section>
-
         <section id="tab-upload" class="tab-content">
-            <div class="section-heading"><div><span class="eyebrow">SECURE PUBLISHING</span><h1>Publish artifact</h1><p class="artifact-meta">Stream directly into immutable storage and the scanning pipeline.</p></div></div>
+            <div class="section-heading"><div><span class="eyebrow">PUBLISHING</span><h1>Publish artifact</h1><p class="artifact-meta">Stream directly into immutable storage.</p></div></div>
             <div class="publish-layout">
                 <div class="upload-form-container">
                     <div class="form-group"><label for="upload-type">Artifact type</label><select id="upload-type"><option value="provider">Provider</option><option value="module">Module</option></select></div>
@@ -105,10 +73,10 @@ provider_installation {
                     <div class="form-row"><div class="form-group"><label for="upload-version">Version</label><input type="text" id="upload-version" placeholder="1.0.0"></div><div id="platform-fields" class="form-row nested"><div class="form-group"><label for="upload-os">OS</label><select id="upload-os"><option value="linux">linux</option><option value="darwin">darwin</option><option value="windows">windows</option></select></div><div class="form-group"><label for="upload-arch">Arch</label><select id="upload-arch"><option value="amd64">amd64</option><option value="arm64">arm64</option></select></div></div></div>
                     <div class="form-group file-group"><label for="upload-file">Artifact file</label><input type="file" id="upload-file"><small>Provider .zip or module .tar.gz</small></div>
                     <div class="form-group"><label for="upload-apikey">API key</label><input type="password" id="upload-apikey" placeholder="Required for publishing" autocomplete="off"></div>
-                    <button id="upload-button" class="btn btn-primary" type="button"><span>Publish &amp; scan</span><b>→</b></button>
+                    <button id="upload-button" class="btn btn-primary" type="button"><span>Publish</span><b>→</b></button>
                     <div id="upload-result" class="result-box" hidden aria-live="polite"></div>
                 </div>
-                <aside class="publish-rail"><div class="rail-step"><b>01</b><div><strong>Stream</strong><span>Bounded upload without whole-file buffering.</span></div></div><div class="rail-step"><b>02</b><div><strong>Verify</strong><span>Immutable SHA-256 artifact identity.</span></div></div><div class="rail-step"><b>03</b><div><strong>Scan</strong><span>Trivy or Checkov in an isolated workspace.</span></div></div><div class="rail-step"><b>04</b><div><strong>Enforce</strong><span>Policy controls protocol visibility.</span></div></div></aside>
+                <aside class="publish-rail"><div class="rail-step"><b>01</b><div><strong>Stream</strong><span>Bounded upload without whole-file buffering.</span></div></div><div class="rail-step"><b>02</b><div><strong>Verify</strong><span>Immutable SHA-256 artifact identity.</span></div></div><div class="rail-step"><b>03</b><div><strong>Publish</strong><span>Indexed and available to Terraform clients.</span></div></div></aside>
             </div>
         </section>
     </main>

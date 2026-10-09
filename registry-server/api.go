@@ -260,17 +260,6 @@ func uploadProviderHandler(w http.ResponseWriter, r *http.Request) {
 			_ = store.Delete(oldKey)
 		}
 	}
-	if scanner != nil {
-		if _, err := scanner.Enqueue(ScanJob{Digest: shasum, Kind: ArtifactProvider, ArtifactKey: zipKey, Namespace: namespace, Name: name, Version: version, Platform: osName + "/" + arch}, false); err != nil {
-			logger.Error("provider security scan enqueue failed", "digest", shasum, "error", err)
-		}
-	}
-
-	// Notify webhooks
-	webhooks.Notify("publish", WebhookPayload{
-		Kind: "provider", Namespace: namespace, Name: name, Version: version,
-		Platform: osName + "/" + arch,
-	})
 
 	logger.Info("provider uploaded",
 		"namespace", namespace, "name", name, "version", version,
@@ -310,10 +299,6 @@ func deleteProviderVersionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	webhooks.Notify("delete", WebhookPayload{
-		Kind: "provider", Namespace: namespace, Name: name, Version: version,
-	})
-
 	logger.Info("provider deleted", "namespace", namespace, "name", name, "version", version)
 
 	writeJSON(w, http.StatusOK, APIResponse{
@@ -343,11 +328,6 @@ func deprecateProviderHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
-
-	webhooks.Notify("deprecate", WebhookPayload{
-		Kind: "provider", Namespace: namespace, Name: name, Version: version,
-		Data: map[string]string{"message": body.Message},
-	})
 
 	writeJSON(w, http.StatusOK, APIResponse{
 		Success: true,
@@ -503,16 +483,6 @@ func uploadModuleHandler(w http.ResponseWriter, r *http.Request) {
 			_ = store.Delete(prefix + "/" + oldMeta.Filename)
 		}
 	}
-	shasum := fmt.Sprintf("%x", h.Sum(nil))
-	if scanner != nil {
-		if _, err := scanner.Enqueue(ScanJob{Digest: shasum, Kind: ArtifactModule, ArtifactKey: key, Namespace: namespace, Name: name, Provider: provider, Version: version}, false); err != nil {
-			logger.Error("module security scan enqueue failed", "digest", shasum, "error", err)
-		}
-	}
-
-	webhooks.Notify("publish", WebhookPayload{
-		Kind: "module", Namespace: namespace, Name: name, Provider: provider, Version: version,
-	})
 
 	logger.Info("module uploaded",
 		"namespace", namespace, "name", name, "provider", provider,
@@ -552,10 +522,6 @@ func deleteModuleVersionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	webhooks.Notify("delete", WebhookPayload{
-		Kind: "module", Namespace: namespace, Name: name, Provider: provider, Version: version,
-	})
-
 	logger.Info("module deleted",
 		"namespace", namespace, "name", name, "provider", provider, "version", version,
 	)
@@ -587,11 +553,6 @@ func deprecateModuleHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
-
-	webhooks.Notify("deprecate", WebhookPayload{
-		Kind: "module", Namespace: namespace, Name: name, Provider: provider, Version: version,
-		Data: map[string]string{"message": body.Message},
-	})
 
 	writeJSON(w, http.StatusOK, APIResponse{
 		Success: true,

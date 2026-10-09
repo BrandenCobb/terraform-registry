@@ -36,7 +36,6 @@ func setupTestEnv(t *testing.T) (*mux.Router, *Store, string) {
 		}
 	}
 	metrics = NewMetrics()
-	webhooks = NewWebhookManager("", testLogger)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/.well-known/terraform.json", wellKnownHandler).Methods("GET")
@@ -64,15 +63,6 @@ func setupTestEnv(t *testing.T) (*mux.Router, *Store, string) {
 	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", deleteModuleVersionHandler).Methods("DELETE")
 	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}/deprecate", deprecateModuleHandler).Methods("POST")
 	api.HandleFunc("/gc", gcHandler).Methods("POST")
-	api.HandleFunc("/security/scans", securityScansHandler).Methods("GET")
-	api.HandleFunc("/security/health", securityHealthHandler).Methods("GET")
-	api.HandleFunc("/security/summary", securitySummaryHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}", securityScanDetailHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}/history", securityScanHistoryHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}/reports/{scanID}", securityRawReportHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}/rescan", securityRescanHandler).Methods("POST")
-	api.HandleFunc("/security/scans/{digest}/waivers", waiverCreateHandler).Methods("POST")
-	api.HandleFunc("/security/waivers/{waiverID}", waiverDeleteHandler).Methods("DELETE")
 
 	return r, s, tmpDir
 }

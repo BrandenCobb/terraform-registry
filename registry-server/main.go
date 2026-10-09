@@ -17,17 +17,12 @@ import (
 )
 
 var (
-	store      *Store
-	keyStore   *KeyStore
-	auditLog   *AuditLog
-	metrics    *RegistryMetrics
-	webhooks   *WebhookManager
-	logger     *slog.Logger
-	signer     *RegistrySigner
-	scanConfig ScanConfig
-	scanRepo   *ScanRepository
-	waiverRepo *WaiverRepository
-	scanner    *ScanManager
+	store    *Store
+	keyStore *KeyStore
+	auditLog *AuditLog
+	metrics  *RegistryMetrics
+	logger   *slog.Logger
+	signer   *RegistrySigner
 )
 
 var version = "dev"
@@ -108,22 +103,6 @@ func moduleArtifactKey(namespace, name, provider, version string) (string, error
 	return "", os.ErrNotExist
 }
 
-func moduleScanAllowed(namespace, name, provider, version string) bool {
-	if !scanConfig.Enabled || scanConfig.Mode == ScanModeVisibility {
-		return true
-	}
-	prefix := fmt.Sprintf("modules/%s/%s/%s/%s", namespace, name, provider, version)
-	data, err := store.Get(prefix + "/artifact.json")
-	if err != nil {
-		return false
-	}
-	var meta ModuleArtifactMeta
-	if json.Unmarshal(data, &meta) != nil || !validDigest(meta.SHA256) {
-		return false
-	}
-	return scanAllowed(meta.SHA256)
-}
-
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
 		fmt.Printf("terraform-registry %s\n", version)
@@ -183,27 +162,6 @@ func main() {
 	// Initialize metrics
 	metrics = NewMetrics()
 
-	// Initialize webhooks
-	webhooks = NewWebhookManager(loadWebhookConfigPath(), logger)
-	scanConfig, err = LoadScanConfig()
-	if err != nil {
-		logger.Error("invalid scanning configuration", "error", err)
-		os.Exit(1)
-	}
-	scanRepo, err = NewScanRepository(basePath)
-	if err != nil {
-		logger.Error("failed to initialize scan repository", "error", err)
-		os.Exit(1)
-	}
-	waiverRepo, err = NewWaiverRepository(basePath)
-	if err != nil {
-		logger.Error("failed to initialize waiver repository", "error", err)
-		os.Exit(1)
-	}
-	scanner = NewScanManager(scanConfig, store, scanRepo, metrics, webhooks, logger)
-	scanner.Start(context.Background())
-	defer scanner.Stop()
-
 	// Initialize rate limiter
 	var rl *RateLimiter
 	var rlRate int
@@ -256,15 +214,6 @@ func main() {
 	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}", deleteModuleVersionHandler).Methods("DELETE")
 	api.HandleFunc("/modules/{namespace}/{name}/{provider}/{version}/deprecate", deprecateModuleHandler).Methods("POST")
 	api.HandleFunc("/gc", gcHandler).Methods("POST")
-	api.HandleFunc("/security/scans", securityScansHandler).Methods("GET")
-	api.HandleFunc("/security/health", securityHealthHandler).Methods("GET")
-	api.HandleFunc("/security/summary", securitySummaryHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}", securityScanDetailHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}/history", securityScanHistoryHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}/reports/{scanID}", securityRawReportHandler).Methods("GET")
-	api.HandleFunc("/security/scans/{digest}/rescan", securityRescanHandler).Methods("POST")
-	api.HandleFunc("/security/scans/{digest}/waivers", waiverCreateHandler).Methods("POST")
-	api.HandleFunc("/security/waivers/{waiverID}", waiverDeleteHandler).Methods("DELETE")
 
 	// Web UI
 	r.PathPrefix("/ui").HandlerFunc(uiHandler)
@@ -369,7 +318,7 @@ func providerVersionsHandler(w http.ResponseWriter, r *http.Request) {
 		published := platforms[:0]
 		for _, platform := range platforms {
 			key := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, v, platform.Filename)
-			if store.Exists(key) && scanAllowed(platform.Shasum) {
+			if store.Exists(key) {
 				published = append(published, platform)
 			}
 		}
@@ -415,10 +364,6 @@ func providerDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	var meta PlatformMeta
 	if err := json.Unmarshal(metaData, &meta); err != nil {
 		http.Error(w, `{"error":"invalid metadata"}`, http.StatusInternalServerError)
-		return
-	}
-	if !scanAllowed(meta.Shasum) {
-		http.Error(w, `{"error":"platform not found"}`, http.StatusNotFound)
 		return
 	}
 
@@ -472,7 +417,7 @@ func networkMirrorIndexHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		platforms, _ := store.GetProviderPlatforms(namespace, providerType, v)
 		for _, platform := range platforms {
-			if scanAllowed(platform.Shasum) {
+			if store.Exists(fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, v, platform.Filename)) {
 				versionMap[v] = struct{}{}
 				break
 			}
@@ -522,9 +467,6 @@ func networkMirrorVersionHandler(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(metaData, &meta); err != nil {
 			continue
 		}
-		if !scanAllowed(meta.Shasum) {
-			continue
-		}
 
 		zipKey := fmt.Sprintf("providers/%s/%s/%s/%s", namespace, providerType, version, meta.Filename)
 		if !store.Exists(zipKey) {
@@ -564,7 +506,7 @@ func moduleVersionsHandler(w http.ResponseWriter, r *http.Request) {
 		if meta, err := store.GetVersionMetadata(metaKey); err == nil && meta.Deprecated {
 			continue
 		}
-		if _, err := moduleArtifactKey(namespace, name, provider, v); err != nil || !moduleScanAllowed(namespace, name, provider, v) {
+		if _, err := moduleArtifactKey(namespace, name, provider, v); err != nil {
 			continue
 		}
 		modules = append(modules, ModuleVersion{Version: v})
@@ -594,7 +536,7 @@ func moduleDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	metrics.ModuleDownloads.Add(1)
 
 	key, err := moduleArtifactKey(namespace, name, provider, version)
-	if err != nil || !moduleScanAllowed(namespace, name, provider, version) {
+	if err != nil {
 		http.Error(w, `{"error":"module not found"}`, http.StatusNotFound)
 		return
 	}
@@ -629,7 +571,7 @@ func moduleLatestDownloadHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		downloadKey, err := moduleArtifactKey(namespace, name, provider, candidate)
-		if err == nil && moduleScanAllowed(namespace, name, provider, candidate) {
+		if err == nil {
 			latestVersion = candidate
 			latestKey = downloadKey
 			break
@@ -653,10 +595,6 @@ func fileDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	// metadata, key files, audit logs, or temporary storage objects.
 	if !isPublicArtifactPath(path) {
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	if !artifactPathScanAllowed(path) {
-		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
