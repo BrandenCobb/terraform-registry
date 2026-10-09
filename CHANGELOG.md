@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-08
+
+### Removed
+- **Scanning subsystem**: removed Trivy/Checkov runtime artifact scanning, quarantine policies, waivers, security dashboard, and all `/api/v1/security/*` endpoints. Scanning is now handled externally by Advana/WDP. (~1,900 lines: `scanning.go`, `scanner_manager.go`, `scanning_api.go`, and associated tests)
+- **Webhook subsystem**: removed webhook notifications and `WEBHOOK_CONFIG`. No use case in the target deployment model. (`webhooks.go`)
+- **Scanner container**: removed `Dockerfile.scanner` and `docker-compose.scanning.yml`
+- **Scanner CI**: removed scanner image build and integration tests from CI pipeline
+
+### Changed
+- Renamed `CLAUDE.md` to `AGENTS.md` with explicit scope guardrails (in-scope, out-of-scope, never-add)
+- Simplified UI to provider/module catalog (removed security tab and scan visualization)
+- Updated roadmap to reflect air-gapped-first mission and Advana/WDP boundary
+- CI now builds and tests only the base registry image (no scanner variant)
+
+### Kept
+- All Terraform protocol endpoints (provider registry, module registry, network mirror)
+- `tfreg` CLI: push, pull, bundle, publish, import, list, deprecate, delete
+- OCI 1.1 import/export for ECR promotion pipelines
+- RBAC API keys, Prometheus metrics, audit logs
+- Base image Trivy scan in CI (container security, not runtime scanning)
+
 ## [2.3.1] - 2026-08-19
 
 ### Security
