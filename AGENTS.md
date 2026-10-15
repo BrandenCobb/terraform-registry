@@ -59,6 +59,13 @@ cd registry-server && go test -v ./...
 docker-compose up -d
 ```
 
+## Toolchain & CI (verified 2026-10-15)
+
+- **Go 1.27.2 is pinned** in `registry-server/go.mod`, `cmd/tfreg/go.mod`, `Dockerfile` (`golang:1.27.2-alpine`), and both workflows. The bump was security-driven (GO-2026-6617, an HTTP/2 HPACK race; the 1.27.1 step fixed stdlib `govulncheck` findings) — don't lower it to work around tooling friction.
+- **`govulncheck` v1.6.0 is a blocking CI gate** for both modules. A new finding fails the build.
+- **`gosec` v2.29.0 is advisory only** (`|| true` in `.github/workflows/ci.yml` and `release.yml`) because gosec's SSA analysis lags new Go releases and errored on 1.27.x export data. Fix real findings, but don't read the job status as a gate.
+- **Releases publish the registry image only** — the scanner image was removed from `release.yml` along with the scanning subsystem (see Scope guardrails); don't re-add it.
+
 ## Environment Variables
 
 | Variable | Default | Description |
