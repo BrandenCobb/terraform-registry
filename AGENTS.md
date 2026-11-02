@@ -59,9 +59,11 @@ cd registry-server && go test -v ./...
 docker-compose up -d
 ```
 
-## Toolchain & CI (verified 2026-10-15)
+## Toolchain & CI (verified 2026-10-15, re-checked 2026-11-01)
 
-- **Go 1.27.2 is pinned** in `registry-server/go.mod`, `cmd/tfreg/go.mod`, `Dockerfile` (`golang:1.27.2-alpine`), and both workflows. The bump was security-driven (GO-2026-6617, an HTTP/2 HPACK race; the 1.27.1 step fixed stdlib `govulncheck` findings) — don't lower it to work around tooling friction.
+- **Go 1.27.2 is the pinned language version** in `registry-server/go.mod`, `cmd/tfreg/go.mod`, and both CI workflows (`go-version: '1.27.2'`). The bump was security-driven (GO-2026-6617, an HTTP/2 HPACK race; the 1.27.1 step fixed stdlib `govulncheck` findings) — don't lower it to work around tooling friction.
+- **The build image is allowed to run ahead of the language pin** (as of 2026-11-01): `Dockerfile` uses `golang:1.27.3-alpine` after dependabot PR #48, while `go.mod` and the workflows stay on 1.27.2. That pin is still >= the `go` directive, so it is fine — but if you touch the toolchain, bump the image, `go.mod`, and both workflows together rather than inventing a fourth version.
+- **Local checkout is a mirror, not the source of truth**: `origin/main` carried 8 unreviewed dependabot merges on 2026-11-01 (#46 login-action 4.7.0, #47 trivy-action, #48 golang 1.27.3, #49 `oras.land/oras-go/v2` 2.6.2→2.6.4 in `cmd/tfreg`) that the on-disk tree had not fast-forwarded to. Check `git status -sb` for `behind` before reading a version out of the working tree, and never `git checkout` over the drift to make docs match.
 - **`govulncheck` v1.6.0 is a blocking CI gate** for both modules. A new finding fails the build.
 - **`gosec` v2.29.0 is advisory only** (`|| true` in `.github/workflows/ci.yml` and `release.yml`) because gosec's SSA analysis lags new Go releases and errored on 1.27.x export data. Fix real findings, but don't read the job status as a gate.
 - **Releases publish the registry image only** — the scanner image was removed from `release.yml` along with the scanning subsystem (see Scope guardrails); don't re-add it.
